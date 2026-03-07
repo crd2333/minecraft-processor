@@ -1,0 +1,22 @@
+{
+  "name": "minecraft-processor",
+  "version": "0.1.0",
+  "description": "Minimal CLI for parsing / rendering / exporting minecraft structure block files (.schem, .schematic, .litematic, .nbt, .mcstructure) into readable data / pictures / 3D models",
+  "scripts": {
+    "parse": "node parse-mc.js",
+    "serve": "node serve_mc.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "vec3": "^0.1.7",
+    "prismarine-nbt": "^2.7.0",
+    "prismarine-schematic": "^1.1.2",
+    "prismarine-world": "^3.3.1",
+    "prismarine-chunk": "^1.22.0",
+    "express": "^4.17.1",
+    "compression": "^1.7.4",
+    "socket.io": "^4.0.0",
+    "three": "0.128.0"
+  }
+}

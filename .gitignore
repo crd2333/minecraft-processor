@@ -1,0 +1,7 @@
+*.jpg
+model.*
+assets/
+node_modules/
+
+# in
+public/
