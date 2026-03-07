@@ -166,6 +166,60 @@ const EXPORT_SCRIPT = `
 })()
 `
 
+const ERROR_BLOCK_SCRIPT = `
+;(function () {
+  'use strict'
+
+  // Classic 2×2 magenta/black "missing texture" checkerboard
+  function makeMissingTex () {
+    var c = document.createElement('canvas')
+    c.width = 2; c.height = 2
+    var ctx = c.getContext('2d')
+    ctx.fillStyle = '#FF00FF'; ctx.fillRect(0, 0, 1, 1); ctx.fillRect(1, 1, 1, 1)
+    ctx.fillStyle = '#000000'; ctx.fillRect(1, 0, 1, 1); ctx.fillRect(0, 1, 1, 1)
+    var t = new THREE.CanvasTexture(c)
+    t.magFilter = THREE.NearestFilter
+    t.minFilter = THREE.NearestFilter
+    return t
+  }
+
+  var pending = null
+
+  function doInject (scene, positions) {
+    var geo = new THREE.BoxGeometry(1, 1, 1)
+    var mat = new THREE.MeshBasicMaterial({ map: makeMissingTex() })
+    var im = new THREE.InstancedMesh(geo, mat, positions.length)
+    im.name = 'errorBlocks'
+    var dummy = new THREE.Object3D()
+    for (var i = 0; i < positions.length; i++) {
+      dummy.position.set(positions[i].x + 0.5, positions[i].y + 0.5, positions[i].z + 0.5)
+      dummy.updateMatrix()
+      im.setMatrixAt(i, dummy.matrix)
+    }
+    im.instanceMatrix.needsUpdate = true
+    scene.add(im)
+    console.log('[error-blocks] rendered ' + positions.length + ' unrecognised block(s) as error placeholders')
+  }
+
+  var poll = setInterval(function () {
+    if (!pending || !window._pw_scene) return
+    doInject(window._pw_scene, pending)
+    pending = null
+    clearInterval(poll)
+  }, 100)
+  setTimeout(function () { clearInterval(poll) }, 60000)
+
+  // Open a second socket connection to receive error block positions from the server.
+  // The socket.io v4 server serves its own client at /socket.io/socket.io.js,
+  // which is loaded explicitly in the HTML before this script runs.
+  var sock = io()
+  sock.on('errorBlocks', function (positions) {
+    if (!positions || !positions.length) { clearInterval(poll); return }
+    pending = positions
+  })
+})()
+`
+
 const buildHtml = () => `<!DOCTYPE html>
 <html>
   <head>
@@ -196,6 +250,8 @@ const buildHtml = () => `<!DOCTYPE html>
     <script src="/vendor/three/STLExporter.js"></script>
     <script src="/vendor/three/GLTFExporter.js"></script>
     <script>${EXPORT_SCRIPT}</script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>${ERROR_BLOCK_SCRIPT}</script>
   </body>
 </html>
 `
@@ -379,24 +435,29 @@ async function buildWorldFromBlocks (world, version, blocks) {
     if (b.z > maxZ) maxZ = b.z
   }
   const Y_BASE = 60
-  const skippedBlocks = {}  // record skipped blocks as a dictionary
+  const errorPositions = []
+  const skippedNames = {}
   for (const b of blocks) {
     const pos = new Vec3(b.x - minX, b.y - minY + Y_BASE, b.z - minZ)
     let block
     try {
       block = Block.fromProperties(b.name, b.properties, 0)
     } catch (_) {
-      try { block = Block.fromProperties(b.name, {}, 0) } catch (_2) { skippedBlocks[b.name] = (skippedBlocks[b.name] || 0) + 1; continue }
+      try { block = Block.fromProperties(b.name, {}, 0) } catch (_2) {
+        errorPositions.push({ x: pos.x, y: pos.y, z: pos.z, name: b.name })
+        skippedNames[b.name] = (skippedNames[b.name] || 0) + 1
+        continue
+      }
     }
     await world.setBlock(pos, block)
   }
-  if (Object.keys(skippedBlocks).length > 0) {
-    console.warn('Warning: Some blocks were skipped (not found in version ${version} registry):')
-    for (const [name, count] of Object.entries(skippedBlocks)) {
+  if (errorPositions.length > 0) {
+    console.warn(`Warning: ${errorPositions.length} block(s) not found in version ${version} registry (will render as error blocks):`)
+    for (const [name, count] of Object.entries(skippedNames)) {
       console.warn(`  - ${name}: ${count}`)
     }
   }
-  return { size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1) }
+  return { size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1), errorPositions }
 }
 
 const main = async () => {
@@ -417,6 +478,7 @@ const main = async () => {
   const format = detectFormat(inputPath)
 
   let center
+  let errorPositions = []
   if (format === 'schem' || format === 'schematic') {
     // Schematic has a native paste() that resolves stateIds correctly
     const schem = await Schematic.read(buffer, version)
@@ -429,11 +491,12 @@ const main = async () => {
   } else {
     // NBT-based formats: parse → extract block list → place via Block.fromProperties
     const blocks = await parseNbtAndExtract(buffer, format)
-    const { size } = await buildWorldFromBlocks(world, version, blocks)
+    const result = await buildWorldFromBlocks(world, version, blocks)
+    errorPositions = result.errorPositions
     center = centerArg || new Vec3(
-      Math.floor(size.x / 2),
-      60 + Math.floor(size.y / 2),
-      Math.floor(size.z / 2)
+      Math.floor(result.size.x / 2),
+      60 + Math.floor(result.size.y / 2),
+      Math.floor(result.size.z / 2)
     )
   }
 
@@ -473,6 +536,7 @@ const main = async () => {
     sockets.push(socket)
     sendChunks([socket])
     socket.emit('position', { pos: center, addMesh: false })
+    socket.emit('errorBlocks', errorPositions)
     socket.on('disconnect', () => {
       sockets.splice(sockets.indexOf(socket), 1)
     })
