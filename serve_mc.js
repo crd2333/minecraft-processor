@@ -3,6 +3,7 @@ const fs = require('fs').promises
 const { Vec3 } = require('vec3')
 const { Schematic } = require('prismarine-schematic')
 const nbt = require('prismarine-nbt')
+const { postProcessWorld } = require('./utils/bedrockToJava')
 
 const THREE_EXPORTERS_DIR = path.join(__dirname, 'node_modules/three/examples/js/exporters')
 const PUBLIC_DIR = path.join(__dirname, 'public')
@@ -327,7 +328,6 @@ function shortName (name) {
 }
 
 // ---- block extraction: litematic ----
-
 function extractLitematicBlocks (simplified) {
   const regions = simplified.Regions
   if (!regions || typeof regions !== 'object' || Array.isArray(regions)) {
@@ -365,7 +365,6 @@ function extractLitematicBlocks (simplified) {
 }
 
 // ---- block extraction: java .nbt structure ----
-
 function extractJavaNbtBlocks (simplified) {
   const palette = simplified.palette
   const blockList = simplified.blocks
@@ -383,8 +382,9 @@ function extractJavaNbtBlocks (simplified) {
   return result
 }
 
-// ---- block extraction: bedrock .mcstructure ----
+const { convertBedrockBlock } = require('./utils/bedrockToJava')
 
+// ---- block extraction: bedrock .mcstructure ----
 function extractMcstructureBlocks (simplified) {
   const sizeArr = simplified.size
   const palette = simplified.structure?.palette?.default?.block_palette
@@ -401,7 +401,8 @@ function extractMcstructureBlocks (simplified) {
     const name = entry.name
     if (isAir(name)) continue
     const { x, y, z } = idxToZYX(i, sz, sy)
-    result.push({ x, y, z, name: shortName(name), properties: entry.states || {} })
+    const { name: blockName, properties } = convertBedrockBlock(shortName(name), entry.states || {})
+    result.push({ x, y, z, name: blockName, properties })
   }
   return result
 }
@@ -435,11 +436,10 @@ async function parseNbtAndExtract (buffer, format) {
 }
 
 // ---- populate prismarine world from extracted block list ----
-
 async function buildWorldFromBlocks (world, version, blocks) {
   if (blocks.length === 0) {
     console.warn('Warning: no non-air blocks found in structure')
-    return { size: new Vec3(1, 1, 1) }
+    return { size: new Vec3(1, 1, 1), placedPositions: [] }
   }
   const Block = require('prismarine-block')(version)
   let minX = Infinity; let minY = Infinity; let minZ = Infinity
@@ -455,6 +455,7 @@ async function buildWorldFromBlocks (world, version, blocks) {
   const Y_BASE = 60
   const errorPositions = []
   const skippedNames = {}
+  const placedPositions = []
   for (const b of blocks) {
     const pos = new Vec3(b.x - minX, b.y - minY + Y_BASE, b.z - minZ)
     let block
@@ -468,6 +469,7 @@ async function buildWorldFromBlocks (world, version, blocks) {
       }
     }
     await world.setBlock(pos, block)
+    placedPositions.push(new Vec3(pos.x, pos.y, pos.z))
   }
   if (errorPositions.length > 0) {
     console.warn(`Warning: ${errorPositions.length} block(s) not found in version ${version} registry (will render as error blocks):`)
@@ -475,7 +477,11 @@ async function buildWorldFromBlocks (world, version, blocks) {
       console.warn(`  - ${name}: ${count}`)
     }
   }
-  return { size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1), errorPositions }
+  return {
+    size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1),
+    errorPositions,
+    placedPositions
+  }
 }
 
 const main = async () => {
@@ -512,6 +518,10 @@ const main = async () => {
     // NBT-based formats: parse → extract block list → place via Block.fromProperties
     const blocks = await parseNbtAndExtract(buffer, format)
     const result = await buildWorldFromBlocks(world, version, blocks)
+    if (format === 'mcstructure') { // additional process for bedrock blocks
+      const Block = require('prismarine-block')(version)
+      await postProcessWorld({ world, Block, Vec3, positions: result.placedPositions, logger: console })
+    }
     errorPositions = result.errorPositions
     center = centerArg || new Vec3(
       Math.floor(result.size.x / 2),
@@ -567,7 +577,7 @@ const main = async () => {
   })
 
   console.log(`Structure loaded: ${inputPath} (format: ${format})`)
-  console.log(`Open http://127.0.0.1:${port} (or use VS Code port forwarding)`)
+  console.log(`Open http://127.0.0.1:${port}`)
 }
 
 main().catch((error) => {

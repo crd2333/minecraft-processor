@@ -18,4 +18,5 @@ npm install
 
 If serve_mc.js reports missing built assets, run npm run build first.
 
-Warning: bedrock structure blocks may have some issues when served for rendering.
+## Fix
+1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
