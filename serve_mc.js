@@ -5,6 +5,7 @@ const { Schematic } = require('prismarine-schematic')
 const nbt = require('prismarine-nbt')
 
 const THREE_EXPORTERS_DIR = path.join(__dirname, 'node_modules/three/examples/js/exporters')
+const PUBLIC_DIR = path.join(__dirname, 'public')
 
 const parseArgs = (argv) => {
   const result = {
@@ -245,16 +246,33 @@ const buildHtml = () => `<!DOCTYPE html>
   </head>
   <body>
     <script>${PRE_SCRIPT}</script>
+    <script src="/socket.io/socket.io.js"></script>
     <script src="index.js"></script>
     <script src="/vendor/three/OBJExporter.js"></script>
     <script src="/vendor/three/STLExporter.js"></script>
     <script src="/vendor/three/GLTFExporter.js"></script>
     <script>${EXPORT_SCRIPT}</script>
-    <script src="/socket.io/socket.io.js"></script>
     <script>${ERROR_BLOCK_SCRIPT}</script>
   </body>
 </html>
 `
+
+async function ensureBuiltAssets (version) {
+  const requiredPaths = [
+    path.join(PUBLIC_DIR, 'index.js'),
+    path.join(PUBLIC_DIR, 'worker.js'),
+    path.join(PUBLIC_DIR, 'textures', `${version}.png`),
+    path.join(PUBLIC_DIR, 'blocksStates', `${version}.json`)
+  ]
+
+  for (const filePath of requiredPaths) {
+    try {
+      await fs.access(filePath)
+    } catch {
+      throw new Error(`Missing built asset: ${path.relative(__dirname, filePath)}. Run \"npm run build\" in minecraft-processor first.`)
+    }
+  }
+}
 
 // ---- format detection ----
 
@@ -477,6 +495,8 @@ const main = async () => {
   const buffer = await fs.readFile(inputPath)
   const format = detectFormat(inputPath)
 
+  await ensureBuiltAssets(version)
+
   let center
   let errorPositions = []
   if (format === 'schem' || format === 'schematic') {
@@ -514,7 +534,7 @@ const main = async () => {
   })
 
   app.use(compression())
-  app.use('/', express.static(path.join(__dirname, 'public')))
+  app.use('/', express.static(PUBLIC_DIR))
 
   const sockets = []
 
