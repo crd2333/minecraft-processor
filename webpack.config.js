@@ -45,7 +45,7 @@ module.exports = [
   },
   {
     ...commonConfig,
-    entry: './vendor/viewer/lib/worker.js',
+    entry: './vendor/prismarine-viewer/lib/worker.js',
     output: {
       path: path.resolve(__dirname, './public'),
       filename: './worker.js'

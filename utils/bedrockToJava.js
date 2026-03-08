@@ -1,6 +1,7 @@
 'use strict'
 
 const blocksB2J = require('./blocksB2J.json')
+const { isAirName, stripMinecraftNamespace } = require('./structure')
 
 /**
  * Bedrock Edition → Java Edition block conversion:
@@ -106,6 +107,13 @@ const HORIZONTAL_OFFSETS = {
   east: { x: 1, y: 0, z: 0 }
 }
 
+const MUSHROOM_VERTICAL_OFFSETS = {
+  up: { x: 0, y: 1, z: 0 },
+  down: { x: 0, y: -1, z: 0 }
+}
+
+// ## Position and facing helpers
+
 function offsetPos (Vec3, pos, dir) {
   const delta = HORIZONTAL_OFFSETS[dir]
   if (!delta) return new Vec3(pos.x, pos.y, pos.z)
@@ -160,6 +168,8 @@ function uniquePositions (Vec3, positions) {
   return out
 }
 
+// ## Block property accessors and predicates
+
 function getBlockProperties (block) {
   return typeof block?.getProperties === 'function' ? { ...block.getProperties() } : {}
 }
@@ -169,7 +179,7 @@ function isTruthyProp (value) {
 }
 
 function isAirBlock (block) {
-  return !block || block.name === 'air' || block.boundingBox === 'empty'
+  return !block || isAirName(block.name) || block.boundingBox === 'empty'
 }
 
 function isFullBlock (block) {
@@ -235,6 +245,8 @@ function isRepeaterLikeBlock (block) {
   return block?.name === 'repeater' || block?.name === 'comparator'
 }
 
+// ## Connection rules and support checks
+
 function supportsRedstoneUp (block) {
   return isFullBlock(block) || isRepeaterLikeBlock(block) || isRedstoneWireBlock(block)
 }
@@ -288,6 +300,8 @@ function canPaneConnectTo (source, target) {
 function canTripwireConnectTo (target) {
   return isTripwireBlock(target) || isTripwireHookBlock(target)
 }
+
+// ## Context-derived property resolvers
 
 async function deriveStairShape (world, Vec3, pos, stair) {
   const props = getBlockProperties(stair)
@@ -518,10 +532,6 @@ async function chorusPlantPass (context) {
 
 async function mushroomBlockPass (context) {
   let changed = 0
-  const verticalOffsets = {
-    up: { x: 0, y: 1, z: 0 },
-    down: { x: 0, y: -1, z: 0 }
-  }
 
   for (const pos of context.positions) {
     const block = await context.world.getBlock(pos)
@@ -539,7 +549,7 @@ async function mushroomBlockPass (context) {
       dirty = true
     }
 
-    for (const [dir, delta] of Object.entries(verticalOffsets)) {
+    for (const [dir, delta] of Object.entries(MUSHROOM_VERTICAL_OFFSETS)) {
       const neighbour = await context.world.getBlock(offsetXYZ(context.Vec3, pos, delta.x, delta.y, delta.z))
       const nextValue = !isMushroomSurfaceBlock(neighbour)
       if (isTruthyProp(props[dir]) === nextValue) continue
@@ -555,6 +565,16 @@ async function mushroomBlockPass (context) {
   return changed
 }
 // #endregion Post-processing passes
+
+const POST_PROCESS_PASSES = [
+  { name: 'stairsShape', run: stairsShapePass },
+  { name: 'chestType', run: chestTypePass },
+  { name: 'horizontalConnections', run: horizontalConnectionsPass },
+  { name: 'redstoneWire', run: redstoneWirePass },
+  { name: 'chorusPlant', run: chorusPlantPass },
+  { name: 'mushroomBlock', run: mushroomBlockPass },
+  { name: 'vineUp', run: vineUpPass }
+]
 
 
 // #region Public API
@@ -574,11 +594,11 @@ function convertBedrockBlock (rawName, states) {
   const jStr = blocksB2J[key]
   if (jStr) {
     const { name, properties } = parseJavaStr(jStr)
-    const shortName = name.startsWith('minecraft:') ? name.slice(10) : name
+    const shortName = stripMinecraftNamespace(name)
     return { name: shortName, properties }
   }
 
-  const shortName = rawName.includes(':') ? rawName.slice(rawName.indexOf(':') + 1) : rawName
+  const shortName = stripMinecraftNamespace(rawName)
   return { name: shortName, properties: {} }
 }
 
@@ -604,22 +624,12 @@ async function postProcessWorld ({ world, Block, Vec3, positions, logger = conso
     positions: uniquePositions(Vec3, positions)
   }
 
-  const passes = [
-    { name: 'stairsShape', run: stairsShapePass },
-    { name: 'chestType', run: chestTypePass },
-    { name: 'horizontalConnections', run: horizontalConnectionsPass },
-    { name: 'redstoneWire', run: redstoneWirePass },
-    { name: 'chorusPlant', run: chorusPlantPass },
-    { name: 'mushroomBlock', run: mushroomBlockPass },
-    { name: 'vineUp', run: vineUpPass }
-  ]
-
   const summary = {
     totalChanged: 0,
     passes: []
   }
 
-  for (const pass of passes) {
+  for (const pass of POST_PROCESS_PASSES) {
     const changed = await pass.run(context)
     summary.passes.push({ name: pass.name, changed })
     summary.totalChanged += changed

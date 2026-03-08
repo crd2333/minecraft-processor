@@ -18,5 +18,21 @@ npm install
 
 If serve_mc.js reports missing built assets, run npm run build first.
 
+## Code Layout
+`parse_mc.js` and `serve_mc.js` remain the only root entrypoints.
+
+Shared structure parsing logic now lives under `utils/structure.js`:
+
+- `structure.js`: shared format detection, NBT probing, coordinate helpers, and the unified structure-to-payload loader used by both parse and serve flows
+
+Rendering-specific world population logic lives under `utils/worldBuilder.js`:
+
+- `worldBuilder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed
+
+The browser page is no longer embedded in `serve_mc.js`.
+Static viewer assets now live in `public/viewer.html`, `public/viewer-preload.js`, and `public/viewer-hooks.js`.
+
+Vendored Prismarine viewer code remains isolated under `vendor/prismarine-viewer/`.
+
 ## Fix
 1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)

@@ -1,10 +1,10 @@
 const path = require('path')
-const { makeTextureAtlas } = require('../vendor/viewer/lib/atlas')
-const { prepareBlocksStates } = require('../vendor/viewer/lib/modelsBuilder')
+const { makeTextureAtlas } = require('../vendor/prismarine-viewer/lib/atlas')
+const { prepareBlocksStates } = require('../vendor/prismarine-viewer/lib/modelsBuilder')
 const mcAssets = require('minecraft-assets')
 const fs = require('fs-extra')
 
-const supportedVersions = require('../vendor/viewer/lib/version').supportedVersions
+const supportedVersions = require('../vendor/prismarine-viewer/lib/version').supportedVersions
 
 function hasAllGeneratedAssets (texturesPath, blockStatesPath) {
   return supportedVersions.every(version => {

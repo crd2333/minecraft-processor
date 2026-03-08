@@ -3,8 +3,8 @@ require('three/examples/js/controls/OrbitControls')
 
 const THREE = global.THREE
 const { Vec3 } = require('vec3')
-const { WorldRenderer } = require('../vendor/viewer/lib/worldrenderer')
-const { getVersion } = require('../vendor/viewer/lib/version')
+const { WorldRenderer } = require('../vendor/prismarine-viewer/lib/worldrenderer')
+const { getVersion } = require('../vendor/prismarine-viewer/lib/version')
 
 class MinimalViewer {
   constructor (renderer) {
