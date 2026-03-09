@@ -18,7 +18,7 @@ function showUsage () {
     'Options:',
     '  -v, --version <mc-version>  Minecraft version hint for .schem/.schematic parsing (optional)',
     '  -r, --res <resolution>      Resolution restriction (optional, e.g. "64")',
-    '  -b, --base <x,y,z>          Base offset for resolution restriction (optional, e.g. "0,0,0")',
+    '  -b, --base <x,y,z>          Base offset for resolution restriction; supports negative values (optional, e.g. "-3,0,0")',
     '      --include-air           Include air blocks (default: false)',
     '      --entity-only           Keep only entity blocks (non-entity blocks are ignored)',
     '      --stdout                Write JSON to stdout instead of a file',
@@ -30,6 +30,82 @@ function showUsage () {
     '  { meta, blocks }',
     '  blocks: [[x, y, z, index], ...]'
   ].join('\n'))
+}
+
+function parseIntegerCoordinate (value, optionName) {
+  if (!/^-?\d+$/.test(value)) {
+    throw new Error(`Invalid value for ${optionName}, all coordinates must be integers`)
+  }
+
+  return parseInt(value, 10)
+}
+
+function parseBaseOffset (value) {
+  if (!value) throw new Error('Missing value for --base')
+
+  const parts = value.split(',').map((part) => part.trim())
+  if (parts.length !== 3) {
+    throw new Error('Invalid value for --base, must be in the format "x,y,z"')
+  }
+
+  return [
+    parseIntegerCoordinate(parts[0], '--base'),
+    parseIntegerCoordinate(parts[1], '--base'),
+    parseIntegerCoordinate(parts[2], '--base')
+  ]
+}
+
+function getBlockCoordinates (block, absolute, baseOffset) {
+  if (absolute) {
+    return {
+      x: block.position.x,
+      y: block.position.y,
+      z: block.position.z
+    }
+  }
+
+  if (block.relativePosition && typeof block.relativePosition.x === 'number') {
+    return {
+      x: block.relativePosition.x,
+      y: block.relativePosition.y,
+      z: block.relativePosition.z
+    }
+  }
+
+  if (baseOffset) {
+    return {
+      x: block.position.x - baseOffset.x,
+      y: block.position.y - baseOffset.y,
+      z: block.position.z - baseOffset.z
+    }
+  }
+
+  return {
+    x: block.position.x,
+    y: block.position.y,
+    z: block.position.z
+  }
+}
+
+function normalizeToBoundingBox (position, resolution, baseOffset) {
+  if (!resolution) return position
+
+  const baseX = baseOffset ? baseOffset[0] : 0
+  const baseY = baseOffset ? baseOffset[1] : 0
+  const baseZ = baseOffset ? baseOffset[2] : 0
+
+  if (
+    position.x < baseX || position.y < baseY || position.z < baseZ ||
+    position.x >= baseX + resolution || position.y >= baseY + resolution || position.z >= baseZ + resolution
+  ) {
+    return null
+  }
+
+  return {
+    x: position.x - baseX,
+    y: position.y - baseY,
+    z: position.z - baseZ
+  }
 }
 
 function parseArgs (argv) {
@@ -73,19 +149,7 @@ function parseArgs (argv) {
     }
 
     if (arg === '-b' || arg === '--base') {
-      const value = argv[i + 1]
-      if (!value) throw new Error('Missing value for --base')
-      const parts = value.split(',').map((part) => part.trim())
-      if (parts.length !== 3) {
-        throw new Error('Invalid value for --base, must be in the format "x,y,z"')
-      }
-      const x = parseInt(parts[0], 10)
-      const y = parseInt(parts[1], 10)
-      const z = parseInt(parts[2], 10)
-      if ([x, y, z].some((coord) => isNaN(coord))) {
-        throw new Error('Invalid value for --base, all coordinates must be integers')
-      }
-      result.base_offset = [x, y, z]
+      result.base_offset = parseBaseOffset(argv[i + 1])
       i++
       continue
     }
@@ -194,42 +258,12 @@ async function main () {
       return []
     }
 
-    let x, y, z
-    if (args.absolute) {
-      x = block.position.x
-      y = block.position.y
-      z = block.position.z
-    } else {
-      if (block.relativePosition && typeof block.relativePosition.x === 'number') {
-        x = block.relativePosition.x
-        y = block.relativePosition.y
-        z = block.relativePosition.z
-      } else if (baseOffset) {
-        x = block.position.x - baseOffset.x
-        y = block.position.y - baseOffset.y
-        z = block.position.z - baseOffset.z
-      } else {
-        x = block.position.x
-        y = block.position.y
-        z = block.position.z
-      }
-    }
+    const blockPosition = getBlockCoordinates(block, args.absolute, baseOffset)
+    const normalizedPosition = normalizeToBoundingBox(blockPosition, args.resolution, args.base_offset)
 
-    // Apply resolution restriction if specified
-    if (args.resolution) {
-      const baseX = args.base_offset ? args.base_offset[0] : 0  // If base offset is provided, use it as the starting point for the resolution check
-      const baseY = args.base_offset ? args.base_offset[1] : 0
-      const baseZ = args.base_offset ? args.base_offset[2] : 0
-      if (x < baseX || y < baseY || z < baseZ || x >= baseX + args.resolution || y >= baseY + args.resolution || z >= baseZ + args.resolution) {
-        return []
-      } else {
-        x = x - baseX
-        y = y - baseY
-        z = z - baseZ
-      }
-    }
+    if (!normalizedPosition) return []
 
-    return [[x, y, z, resolved.index]]
+    return [[normalizedPosition.x, normalizedPosition.y, normalizedPosition.z, resolved.index]]
   })
 
   const output = {
@@ -241,6 +275,21 @@ async function main () {
       includeAir: args.includeAir,
       entityOnly: args.entityOnly,
       coordinateSpace: args.absolute ? 'absolute' : 'relative',
+      boundingBox: args.resolution
+        ? {
+            base: {
+              x: args.base_offset ? args.base_offset[0] : 0,
+              y: args.base_offset ? args.base_offset[1] : 0,
+              z: args.base_offset ? args.base_offset[2] : 0
+            },
+            size: {
+              x: args.resolution,
+              y: args.resolution,
+              z: args.resolution
+            },
+            outputOrigin: { x: 0, y: 0, z: 0 }
+          }
+        : null,
       vocabFile: vocabularyPath,
       vocabVersion: vocabulary.mcVersion || null,
       unknownIndex: vocabulary.unknownIndex,

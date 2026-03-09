@@ -7,6 +7,68 @@ const { buildWorldFromPayload } = require('./utils/worldBuilder')
 
 const THREE_EXPORTERS_DIR = path.join(__dirname, 'node_modules/three/examples/js/exporters')
 const PUBLIC_DIR = path.join(__dirname, 'public')
+const DEFAULT_PASTE_ORIGIN = new Vec3(0, 60, 0)
+
+function parseVec3Option (value, optionName) {
+  if (!value) throw new Error(`Missing value for ${optionName}`)
+  const [x, y, z] = value.split(',').map((part) => Number(part.trim()))
+  if ([x, y, z].some(Number.isNaN)) {
+    throw new Error(`Invalid ${optionName}, expected x,y,z`)
+  }
+  return new Vec3(x, y, z)
+}
+
+function parseSizeOption (value, optionName) {
+  if (!value) throw new Error(`Missing value for ${optionName}`)
+
+  const parts = value.split(',').map((part) => Number(part.trim()))
+  const size = parts.length === 1
+    ? new Vec3(parts[0], parts[0], parts[0])
+    : parts.length === 3
+      ? new Vec3(parts[0], parts[1], parts[2])
+      : null
+
+  if (!size || [size.x, size.y, size.z].some((axis) => Number.isNaN(axis) || axis <= 0)) {
+    throw new Error(`Invalid ${optionName}, expected n or x,y,z with positive numbers`)
+  }
+
+  return size
+}
+
+function makeBoundingBoxConfig (structureOriginWorldPos, origin, size) {
+  if (!structureOriginWorldPos || !origin || !size) return null
+
+  return {
+    origin: {
+      x: structureOriginWorldPos.x + origin.x,
+      y: structureOriginWorldPos.y + origin.y,
+      z: structureOriginWorldPos.z + origin.z
+    },
+    size: {
+      x: size.x,
+      y: size.y,
+      z: size.z
+    },
+    relativeOrigin: {
+      x: origin.x,
+      y: origin.y,
+      z: origin.z
+    }
+  }
+}
+
+function formatBoundingBoxArgsPreview (boundingBox) {
+  if (!boundingBox || !boundingBox.relativeOrigin || !boundingBox.size) return null
+
+  const base = `--base ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`
+  const isCube = boundingBox.size.x === boundingBox.size.y && boundingBox.size.y === boundingBox.size.z
+
+  if (isCube) {
+    return `${base} --res ${boundingBox.size.x}`
+  }
+
+  return `${base} --bbox-size ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z} (reference only; parse_mc_ids.js currently supports cubic --res only)`
+}
 
 const parseArgs = (argv) => {
   const result = {
@@ -14,7 +76,10 @@ const parseArgs = (argv) => {
     version: '1.21.4',
     port: 3000,
     viewDistance: 8,
-    center: null
+    center: null,
+    boundingBoxOrigin: new Vec3(0, 0, 0),
+    boundingBoxSize: new Vec3(64, 64, 64),
+    showBoundingBox: true
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -41,12 +106,22 @@ const parseArgs = (argv) => {
       continue
     }
     if (arg === '--center' || arg === '-c') {
-      const value = argv[i + 1]
-      if (!value) throw new Error('Missing value for --center')
-      const [x, y, z] = value.split(',').map(Number)
-      if ([x, y, z].some(Number.isNaN)) throw new Error('Invalid --center, expected x,y,z')
-      result.center = new Vec3(x, y, z)
+      result.center = parseVec3Option(argv[i + 1], '--center')
       i++
+      continue
+    }
+    if (arg === '--bbox-origin') {
+      result.boundingBoxOrigin = parseVec3Option(argv[i + 1], '--bbox-origin')
+      i++
+      continue
+    }
+    if (arg === '--bbox-size') {
+      result.boundingBoxSize = parseSizeOption(argv[i + 1], '--bbox-size')
+      i++
+      continue
+    }
+    if (arg === '--no-bbox') {
+      result.showBoundingBox = false
       continue
     }
     result.positional.push(arg)
@@ -73,11 +148,20 @@ async function ensureBuiltAssets (version) {
 }
 
 const main = async () => {
-  const { positional, version, port, viewDistance, center: centerArg } = parseArgs(process.argv.slice(2))
+  const {
+    positional,
+    version,
+    port,
+    viewDistance,
+    center: centerArg,
+    boundingBoxOrigin,
+    boundingBoxSize,
+    showBoundingBox
+  } = parseArgs(process.argv.slice(2))
   const inputArg = positional[0]
 
   if (!inputArg) {
-    console.error('Usage: node serve_mc.js <file.{schem,schematic,litematic,nbt,mcstructure}> [--version <mc-version>] [--port <port>] [--view-distance <chunks>] [--center x,y,z]')
+    console.error('Usage: node serve_mc.js <file.{schem,schematic,litematic,nbt,mcstructure}> [--version <mc-version>] [--port <port>] [--view-distance <chunks>] [--center x,y,z] [--bbox-origin x,y,z] [--bbox-size n|x,y,z] [--no-bbox]')
     process.exit(1)
   }
 
@@ -94,15 +178,17 @@ const main = async () => {
   let center
   let errorPositions = []
   let structureAxis = null
+  let structureOriginWorldPos = null
   if (format === 'schem' || format === 'schematic') {
     // Schematic has a native paste() that resolves stateIds correctly
     const schem = await Schematic.read(buffer, version)
-    await schem.paste(world, new Vec3(0, 60, 0))
+    await schem.paste(world, DEFAULT_PASTE_ORIGIN)
+    structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
     const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
     structureAxis = {
       origin: {
         x: Number(schem.offset.x || 0),
-        y: 60 + Number(schem.offset.y || 0),
+        y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
         z: Number(schem.offset.z || 0)
       },
       length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
@@ -121,6 +207,7 @@ const main = async () => {
     const Block = require('prismarine-block')(version)
     const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
     errorPositions = result.errorPositions
+    structureOriginWorldPos = result.originWorldPos
     structureAxis = {
       origin: result.originWorldPos,
       length: result.axisLength
@@ -131,6 +218,10 @@ const main = async () => {
       Math.floor(result.size.z / 2)
     )
   }
+
+  const boundingBox = showBoundingBox
+    ? makeBoundingBoxConfig(structureOriginWorldPos, boundingBoxOrigin, boundingBoxSize)
+    : null
 
   const express = require('express')
   const compression = require('compression')
@@ -170,6 +261,7 @@ const main = async () => {
     socket.emit('position', { pos: center, addMesh: false })
     socket.emit('errorBlocks', errorPositions)
     socket.emit('structureAxis', structureAxis)
+    socket.emit('boundingBox', boundingBox)
     socket.on('disconnect', () => {
       sockets.splice(sockets.indexOf(socket), 1)
     })
@@ -180,6 +272,11 @@ const main = async () => {
   })
 
   console.log(`Structure loaded: ${inputPath} (format: ${format})`)
+  if (boundingBox) {
+    console.log(`Bounding box origin (relative): ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`)
+    console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)
+    console.log(`parse_mc_ids args: ${formatBoundingBoxArgsPreview(boundingBox)}`)
+  }
   console.log(`Open http://127.0.0.1:${port}`)
 }
 
@@ -187,8 +284,3 @@ main().catch((error) => {
   console.error(error)
   process.exit(1)
 })
-
-
-
-
-

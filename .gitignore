@@ -2,5 +2,8 @@
 model.*
 assets/
 node_modules/
-public/
+public/*
+!public/viewer-hooks.js
+!public/viewer-preload.js
+!public/viewer.html
 package-lock.json
