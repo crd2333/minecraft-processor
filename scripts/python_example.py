@@ -30,6 +30,8 @@ def main():
         "--entity-only",
         "--stdout",
         "--pretty",
+        "--res", "64",
+        "--base", "0,0,0",
     ])
 
     print("vocab_entity_range", vocabulary["ranges"]["entity"])

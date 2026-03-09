@@ -635,9 +635,9 @@ async function postProcessWorld ({ world, Block, Vec3, positions, logger = conso
     summary.totalChanged += changed
   }
 
-  if (summary.totalChanged > 0 && logger?.log) {
-    logger.log('Applied Java world post-process:', summary.passes.map(pass => pass.name + '=' + pass.changed).join(', '))
-  }
+//   if (summary.totalChanged > 0 && logger?.log) {
+//     logger.log('Applied Java world post-process:', summary.passes.map(pass => pass.name + '=' + pass.changed).join(', '))
+//   }
 
   return summary
 }

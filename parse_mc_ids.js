@@ -17,6 +17,8 @@ function showUsage () {
     '',
     'Options:',
     '  -v, --version <mc-version>  Minecraft version hint for .schem/.schematic parsing (optional)',
+    '  -r, --res <resolution>      Resolution restriction (optional, e.g. "64")',
+    '  -b, --base <x,y,z>          Base offset for resolution restriction (optional, e.g. "0,0,0")',
     '      --include-air           Include air blocks (default: false)',
     '      --entity-only           Keep only entity blocks (non-entity blocks are ignored)',
     '      --stdout                Write JSON to stdout instead of a file',
@@ -34,6 +36,8 @@ function parseArgs (argv) {
   const result = {
     positional: [],
     version: undefined,
+    resolution: 64,
+    base_offset: null,
     includeAir: false,
     entityOnly: false,
     absolute: false,
@@ -53,6 +57,35 @@ function parseArgs (argv) {
       const value = argv[i + 1]
       if (!value) throw new Error('Missing value for --version')
       result.version = value
+      i++
+      continue
+    }
+
+    if (arg === '-r' || arg === '--res') {
+      const value = argv[i + 1]
+      if (!value) throw new Error('Missing value for --res')
+      result.resolution = parseInt(value, 10)
+      if (isNaN(result.resolution) || result.resolution <= 0) {
+        throw new Error('Invalid value for --res, must be a positive integer')
+      }
+      i++
+      continue
+    }
+
+    if (arg === '-b' || arg === '--base') {
+      const value = argv[i + 1]
+      if (!value) throw new Error('Missing value for --base')
+      const parts = value.split(',').map((part) => part.trim())
+      if (parts.length !== 3) {
+        throw new Error('Invalid value for --base, must be in the format "x,y,z"')
+      }
+      const x = parseInt(parts[0], 10)
+      const y = parseInt(parts[1], 10)
+      const z = parseInt(parts[2], 10)
+      if ([x, y, z].some((coord) => isNaN(coord))) {
+        throw new Error('Invalid value for --base, all coordinates must be integers')
+      }
+      result.base_offset = [x, y, z]
       i++
       continue
     }
@@ -144,7 +177,7 @@ async function main () {
   let unknownBlockCount = 0
   let skippedNonEntityBlockCount = 0
 
-  const baseOffset = payload.meta?.offset || null
+  const baseOffset = payload.meta?.offset || null // base offset from the structure file (if any)
 
   const blocks = payload.blocks.flatMap((block) => {
     const resolved = resolveBlockIndex(block, vocabulary)
@@ -179,6 +212,20 @@ async function main () {
         x = block.position.x
         y = block.position.y
         z = block.position.z
+      }
+    }
+
+    // Apply resolution restriction if specified
+    if (args.resolution) {
+      const baseX = args.base_offset ? args.base_offset[0] : 0  // If base offset is provided, use it as the starting point for the resolution check
+      const baseY = args.base_offset ? args.base_offset[1] : 0
+      const baseZ = args.base_offset ? args.base_offset[2] : 0
+      if (x < baseX || y < baseY || z < baseZ || x >= baseX + args.resolution || y >= baseY + args.resolution || z >= baseZ + args.resolution) {
+        return []
+      } else {
+        x = x - baseX
+        y = y - baseY
+        z = z - baseZ
       }
     }
 

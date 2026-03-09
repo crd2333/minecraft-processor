@@ -93,10 +93,20 @@ const main = async () => {
 
   let center
   let errorPositions = []
+  let structureAxis = null
   if (format === 'schem' || format === 'schematic') {
     // Schematic has a native paste() that resolves stateIds correctly
     const schem = await Schematic.read(buffer, version)
     await schem.paste(world, new Vec3(0, 60, 0))
+    const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
+    structureAxis = {
+      origin: {
+        x: Number(schem.offset.x || 0),
+        y: 60 + Number(schem.offset.y || 0),
+        z: Number(schem.offset.z || 0)
+      },
+      length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
+    }
     center = centerArg || new Vec3(
       Math.floor(schem.size.x / 2),
       60 + Math.floor(schem.size.y / 2),
@@ -111,6 +121,10 @@ const main = async () => {
     const Block = require('prismarine-block')(version)
     const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
     errorPositions = result.errorPositions
+    structureAxis = {
+      origin: result.originWorldPos,
+      length: result.axisLength
+    }
     center = centerArg || new Vec3(
       Math.floor(result.size.x / 2),
       60 + Math.floor(result.size.y / 2),
@@ -155,6 +169,7 @@ const main = async () => {
     sendChunks([socket])
     socket.emit('position', { pos: center, addMesh: false })
     socket.emit('errorBlocks', errorPositions)
+    socket.emit('structureAxis', structureAxis)
     socket.on('disconnect', () => {
       sockets.splice(sockets.indexOf(socket), 1)
     })

@@ -22,7 +22,13 @@ function normalizeRenderableBlock (block) {
 async function buildWorldFromPayload ({ world, version, payload, Block, Vec3, logger = console }) {
   if (!payload || !Array.isArray(payload.blocks) || payload.blocks.length === 0) {
     logger.warn('Warning: no non-air blocks found in structure')
-    return { size: new Vec3(1, 1, 1), errorPositions: [], placedPositions: [] }
+    return {
+      size: new Vec3(1, 1, 1),
+      errorPositions: [],
+      placedPositions: [],
+      originWorldPos: new Vec3(0, 60, 0),
+      axisLength: 5
+    }
   }
 
   let minX = Infinity
@@ -43,6 +49,12 @@ async function buildWorldFromPayload ({ world, version, payload, Block, Vec3, lo
   }
 
   const yBase = 60
+  const metaOffset = payload.meta?.offset || { x: minX, y: minY, z: minZ }
+  const metaSize = payload.meta?.size || {
+    x: maxX - minX + 1,
+    y: maxY - minY + 1,
+    z: maxZ - minZ + 1
+  }
   const errorPositions = []
   const skippedNames = {}
   const placedPositions = []
@@ -86,7 +98,21 @@ async function buildWorldFromPayload ({ world, version, payload, Block, Vec3, lo
   return {
     size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1),
     errorPositions,
-    placedPositions
+    placedPositions,
+    originWorldPos: new Vec3(
+      Number(metaOffset.x || 0) - minX,
+      Number(metaOffset.y || 0) - minY + yBase,
+      Number(metaOffset.z || 0) - minZ
+    ),
+    axisLength: Math.max(
+      Number(metaSize.x || 1),
+      Number(metaSize.y || 1),
+      Number(metaSize.z || 1)
+    ) + Math.max(4, Math.ceil(Math.max(
+      Number(metaSize.x || 1),
+      Number(metaSize.y || 1),
+      Number(metaSize.z || 1)
+    ) * 0.1))
   }
 }
 
