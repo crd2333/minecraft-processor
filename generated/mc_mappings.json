@@ -1,6 +1,6 @@
 // map minecraft block names to alpha, color and is_full_block properties for simplified voxel rendering
 // not used in this project yet
-export default {
+{
     "Acacia_Door": {
         "alpha": 1.0,
         "color": "#b16640",

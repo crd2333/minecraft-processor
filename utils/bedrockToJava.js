@@ -1,6 +1,6 @@
 'use strict'
 
-const blocksB2J = require('./blocksB2J.json')
+const blocksB2J = require('../generated/blocksB2J.json')
 const { isAirName, stripMinecraftNamespace } = require('./structure')
 
 /**
@@ -9,7 +9,7 @@ const { isAirName, stripMinecraftNamespace } = require('./structure')
  * Then a world post-processing step to fix up properties that are missing but can be derived from world context.
  *
  * Runtime prerequisite:
- *   ship utils/blocksB2J.json with the release artifacts.
+ *   ship generated/blocksB2J.json with the release artifacts.
  */
 
 
@@ -61,7 +61,7 @@ const BOOL_PROPS = new Set([
   'wall_post_bit'
 ])
 
-// Serialise a Bedrock states object into the same canonical bracket notation used in utils/blocksB2J.json.
+// Serialise a Bedrock states object into the same canonical bracket notation used in generated/blocksB2J.json.
 function serializeBedrockKey (name, states) {
   const fullName = name.includes(':') ? name : 'minecraft:' + name
   const keys = Object.keys(states).sort()
