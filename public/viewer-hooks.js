@@ -21,6 +21,7 @@
     '<div class="panel-section" id="bbox-panel">',
     '<div class="panel-title">Bounding Box</div>',
     '<label class="panel-checkbox"><input type="checkbox" id="bbox-enabled" checked> Show bounding box</label>',
+    '<label class="panel-checkbox"><input type="checkbox" id="bbox-hide-outside"> Hide outside blocks</label>',
     '<div class="field-grid">',
     '<label>Origin X<input id="bbox-origin-x" type="number" step="1"></label>',
     '<label>Size X<input id="bbox-size-x" type="number" min="1" step="1"></label>',
@@ -145,6 +146,36 @@
   var axisGroup = null
   var boundingBoxGroup = null
 
+  function createBoundingPlanes (config) {
+    if (!config || !config.origin || !config.size) return []
+
+    var min = config.origin
+    var max = {
+      x: config.origin.x + config.size.x,
+      y: config.origin.y + config.size.y,
+      z: config.origin.z + config.size.z
+    }
+
+    return [
+      new THREE.Plane(new THREE.Vector3(1, 0, 0), -min.x),
+      new THREE.Plane(new THREE.Vector3(-1, 0, 0), max.x),
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), -min.y),
+      new THREE.Plane(new THREE.Vector3(0, -1, 0), max.y),
+      new THREE.Plane(new THREE.Vector3(0, 0, 1), -min.z),
+      new THREE.Plane(new THREE.Vector3(0, 0, -1), max.z)
+    ]
+  }
+
+  function applyBoundingBoxClipping () {
+    if (!window._pw_renderer || !window._pw_worldMaterial) return
+
+    var enabled = currentBoundingBox && currentBoundingBox.hideOutside === true
+    window._pw_renderer.localClippingEnabled = enabled
+    window._pw_worldMaterial.clippingPlanes = enabled ? createBoundingPlanes(currentBoundingBox) : null
+    window._pw_worldMaterial.clipIntersection = false
+    window._pw_worldMaterial.needsUpdate = true
+  }
+
   function cloneBoundingBoxConfig (config) {
     if (!config || !config.origin || !config.size) return null
     return {
@@ -155,7 +186,8 @@
         z: Number(config.relativeOrigin && config.relativeOrigin.z) || 0
       },
       size: { x: Number(config.size.x) || 1, y: Number(config.size.y) || 1, z: Number(config.size.z) || 1 },
-      enabled: config.enabled !== false
+      enabled: config.enabled !== false,
+      hideOutside: config.hideOutside === true
     }
   }
 
@@ -201,6 +233,8 @@
     if (!currentBoundingBox) return
     var enabled = document.getElementById('bbox-enabled')
     if (enabled) enabled.checked = currentBoundingBox.enabled !== false
+    var hideOutside = document.getElementById('bbox-hide-outside')
+    if (hideOutside) hideOutside.checked = currentBoundingBox.hideOutside === true
 
     setInputValue('bbox-origin-x', currentBoundingBox.relativeOrigin.x)
     setInputValue('bbox-origin-y', currentBoundingBox.relativeOrigin.y)
@@ -215,6 +249,7 @@
     if (!currentBoundingBox) return
 
     currentBoundingBox.enabled = document.getElementById('bbox-enabled').checked
+    currentBoundingBox.hideOutside = document.getElementById('bbox-hide-outside').checked
     currentBoundingBox.relativeOrigin = {
       x: Math.round(getInputNumber('bbox-origin-x', currentBoundingBox.relativeOrigin.x)),
       y: Math.round(getInputNumber('bbox-origin-y', currentBoundingBox.relativeOrigin.y)),
@@ -232,6 +267,7 @@
     }
 
     syncBoundingBoxControls()
+    applyBoundingBoxClipping()
     if (window._pw_scene) renderBoundingBox(window._pw_scene, currentBoundingBox)
   }
 
@@ -243,7 +279,8 @@
       'bbox-size-x',
       'bbox-size-y',
       'bbox-size-z',
-      'bbox-enabled'
+      'bbox-enabled',
+      'bbox-hide-outside'
     ]
 
     fieldIds.forEach(function (id) {
@@ -258,6 +295,7 @@
       currentBoundingBox.relativeOrigin = { x: 0, y: 0, z: 0 }
       currentBoundingBox.size = { x: 64, y: 64, z: 64 }
       currentBoundingBox.enabled = true
+      currentBoundingBox.hideOutside = false
       syncBoundingBoxControls()
       updateBoundingBoxFromControls()
       setStatus('Bounding box reset to 64x64x64 at 0,0,0.')
@@ -462,6 +500,7 @@
       }
       currentBoundingBox = nextConfig
       syncBoundingBoxControls()
+      applyBoundingBoxClipping()
       pendingBoundingBox = nextConfig
       if (window._pw_scene) renderBoundingBox(window._pw_scene, nextConfig)
     })

@@ -52,11 +52,15 @@ class MinimalViewer {
 }
 
 const renderer = new THREE.WebGLRenderer()
+renderer.localClippingEnabled = true
 renderer.setPixelRatio(window.devicePixelRatio || 1)
 renderer.setSize(window.innerWidth, window.innerHeight)
 document.body.appendChild(renderer.domElement)
 
 const viewer = new MinimalViewer(renderer)
+window._pw_renderer = renderer
+window._pw_viewer = viewer
+window._pw_worldMaterial = viewer.world.material
 const controls = new THREE.OrbitControls(viewer.camera, renderer.domElement)
 const socket = window.io()
 
