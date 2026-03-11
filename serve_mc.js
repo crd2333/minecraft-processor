@@ -57,6 +57,55 @@ function makeBoundingBoxConfig (structureOriginWorldPos, origin, size) {
   }
 }
 
+function isPointInsideBoundingBox (point, boundingBox) {
+  if (!boundingBox || !boundingBox.origin || !boundingBox.size) return true
+
+  return (
+    point.x >= boundingBox.origin.x && point.x < boundingBox.origin.x + boundingBox.size.x &&
+    point.y >= boundingBox.origin.y && point.y < boundingBox.origin.y + boundingBox.size.y &&
+    point.z >= boundingBox.origin.z && point.z < boundingBox.origin.z + boundingBox.size.z
+  )
+}
+
+function getChunkYBounds (chunk) {
+  const minY = Number.isFinite(chunk.minY) ? chunk.minY : 0
+  const worldHeight = Number.isFinite(chunk.worldHeight) ? chunk.worldHeight : 256
+  return {
+    minY,
+    maxY: minY + worldHeight
+  }
+}
+
+function filterChunkForBoundingBox (Chunk, chunk, chunkX, chunkZ, boundingBox) {
+  if (!boundingBox) return chunk.toJson()
+
+  const filteredChunk = Chunk.fromJson(chunk.toJson())
+  const yBounds = getChunkYBounds(filteredChunk)
+
+  for (let y = yBounds.minY; y < yBounds.maxY; y++) {
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        const worldPos = {
+          x: chunkX * 16 + x,
+          y,
+          z: chunkZ * 16 + z
+        }
+
+        if (!isPointInsideBoundingBox(worldPos, boundingBox)) {
+          filteredChunk.setBlockStateId({ x, y, z }, 0)
+        }
+      }
+    }
+  }
+
+  return filteredChunk.toJson()
+}
+
+function filterErrorPositionsForBoundingBox (positions, boundingBox) {
+  if (!boundingBox) return positions
+  return positions.filter((position) => isPointInsideBoundingBox(position, boundingBox))
+}
+
 function formatBoundingBoxArgsPreview (boundingBox) {
   if (!boundingBox || !boundingBox.relativeOrigin || !boundingBox.size) return null
 
@@ -241,12 +290,13 @@ const main = async () => {
 
   const sockets = []
 
-  async function sendChunks (targets) {
+  async function sendChunks (targets, boundingBoxFilter = null) {
     const cx = Math.floor(center.x / 16)
     const cz = Math.floor(center.z / 16)
     for (let x = cx - viewDistance; x <= cx + viewDistance; x++) {
       for (let z = cz - viewDistance; z <= cz + viewDistance; z++) {
-        const chunk = (await world.getColumn(x, z)).toJson()
+        const chunkColumn = await world.getColumn(x, z)
+        const chunk = filterChunkForBoundingBox(Chunk, chunkColumn, x, z, boundingBoxFilter)
         for (const socket of targets) {
           socket.emit('loadChunk', { x: x * 16, z: z * 16, chunk })
         }
@@ -255,6 +305,7 @@ const main = async () => {
   }
 
   io.on('connection', (socket) => {
+    socket.boundingBoxFilter = null
     socket.emit('version', version)
     sockets.push(socket)
     sendChunks([socket])
@@ -262,6 +313,17 @@ const main = async () => {
     socket.emit('errorBlocks', errorPositions)
     socket.emit('structureAxis', structureAxis)
     socket.emit('boundingBox', boundingBox)
+    socket.on('bboxFilter', async (filterState) => {
+      const nextFilter = filterState && filterState.enabled ? {
+        origin: filterState.origin,
+        size: filterState.size
+      } : null
+
+      socket.boundingBoxFilter = nextFilter
+      // Send filtered chunks to ALL sockets (viewer-hooks.js and client.js are separate connections)
+      await sendChunks(sockets, nextFilter)
+      socket.emit('errorBlocks', filterErrorPositionsForBoundingBox(errorPositions, nextFilter))
+    })
     socket.on('disconnect', () => {
       sockets.splice(sockets.indexOf(socket), 1)
     })
@@ -272,6 +334,7 @@ const main = async () => {
   })
 
   console.log(`Structure loaded: ${inputPath} (format: ${format})`)
+  console.log(`Structure size (x,y,z): ${structureAxis.length},${structureAxis.length},${structureAxis.length}`)
   if (boundingBox) {
     console.log(`Bounding box origin (relative): ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`)
     console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)

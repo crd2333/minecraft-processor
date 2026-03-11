@@ -145,35 +145,43 @@
   var axisVisible = true
   var axisGroup = null
   var boundingBoxGroup = null
+  var errorBlocksMesh = null
+  var BOUNDING_BOX_RENDER_PADDING = 0.03
+  var socket = null
+  var bboxFilterEmitTimer = null
 
-  function createBoundingPlanes (config) {
-    if (!config || !config.origin || !config.size) return []
-
-    var min = config.origin
-    var max = {
-      x: config.origin.x + config.size.x,
-      y: config.origin.y + config.size.y,
-      z: config.origin.z + config.size.z
-    }
-
-    return [
-      new THREE.Plane(new THREE.Vector3(1, 0, 0), -min.x),
-      new THREE.Plane(new THREE.Vector3(-1, 0, 0), max.x),
-      new THREE.Plane(new THREE.Vector3(0, 1, 0), -min.y),
-      new THREE.Plane(new THREE.Vector3(0, -1, 0), max.y),
-      new THREE.Plane(new THREE.Vector3(0, 0, 1), -min.z),
-      new THREE.Plane(new THREE.Vector3(0, 0, -1), max.z)
-    ]
+  function disposeErrorBlocksMesh () {
+    if (!errorBlocksMesh) return
+    if (errorBlocksMesh.parent) errorBlocksMesh.parent.remove(errorBlocksMesh)
+    if (errorBlocksMesh.geometry) errorBlocksMesh.geometry.dispose()
+    if (errorBlocksMesh.material) errorBlocksMesh.material.dispose()
+    errorBlocksMesh = null
   }
 
   function applyBoundingBoxClipping () {
-    if (!window._pw_renderer || !window._pw_worldMaterial) return
+    if (window._pw_renderer) window._pw_renderer.localClippingEnabled = false
+    if (window._pw_worldMaterial) {
+      window._pw_worldMaterial.clippingPlanes = null
+      window._pw_worldMaterial.clipIntersection = false
+      window._pw_worldMaterial.needsUpdate = true
+    }
+    if (errorBlocksMesh && errorBlocksMesh.material) {
+      errorBlocksMesh.material.clippingPlanes = null
+      errorBlocksMesh.material.clipIntersection = false
+      errorBlocksMesh.material.needsUpdate = true
+    }
+  }
 
-    var enabled = currentBoundingBox && currentBoundingBox.hideOutside === true
-    window._pw_renderer.localClippingEnabled = enabled
-    window._pw_worldMaterial.clippingPlanes = enabled ? createBoundingPlanes(currentBoundingBox) : null
-    window._pw_worldMaterial.clipIntersection = false
-    window._pw_worldMaterial.needsUpdate = true
+  function scheduleBoundingBoxFilterUpdate () {
+    if (!socket || !currentBoundingBox) return
+    clearTimeout(bboxFilterEmitTimer)
+    bboxFilterEmitTimer = setTimeout(function () {
+      socket.emit('bboxFilter', {
+        enabled: currentBoundingBox.hideOutside === true,
+        origin: currentBoundingBox.origin,
+        size: currentBoundingBox.size
+      })
+    }, 80)
   }
 
   function cloneBoundingBoxConfig (config) {
@@ -189,6 +197,23 @@
       enabled: config.enabled !== false,
       hideOutside: config.hideOutside === true
     }
+  }
+
+  function isPositionInsideBoundingBox (position, boundingBox) {
+    if (!position || !boundingBox || !boundingBox.origin || !boundingBox.size) return true
+    return (
+      position.x >= boundingBox.origin.x && position.x < boundingBox.origin.x + boundingBox.size.x &&
+      position.y >= boundingBox.origin.y && position.y < boundingBox.origin.y + boundingBox.size.y &&
+      position.z >= boundingBox.origin.z && position.z < boundingBox.origin.z + boundingBox.size.z
+    )
+  }
+
+  function filterErrorPositionsByBoundingBox (positions, boundingBox) {
+    if (!Array.isArray(positions)) return []
+    if (!boundingBox || boundingBox.hideOutside !== true) return positions
+    return positions.filter(function (position) {
+      return isPositionInsideBoundingBox(position, boundingBox)
+    })
   }
 
   function quoteArg (value) {
@@ -268,6 +293,7 @@
 
     syncBoundingBoxControls()
     applyBoundingBoxClipping()
+    scheduleBoundingBoxFilterUpdate()
     if (window._pw_scene) renderBoundingBox(window._pw_scene, currentBoundingBox)
   }
 
@@ -393,20 +419,26 @@
     disposeBoundingBoxGroup()
     if (!config || !config.origin || !config.size || config.enabled === false) return
 
+    var padding = BOUNDING_BOX_RENDER_PADDING
     var size = config.size
     var center = {
       x: config.origin.x + (size.x / 2),
       y: config.origin.y + (size.y / 2),
       z: config.origin.z + (size.z / 2)
     }
+    var expandedSize = {
+      x: size.x + (padding * 2),
+      y: size.y + (padding * 2),
+      z: size.z + (padding * 2)
+    }
 
     var group = new THREE.Group()
     var fill = new THREE.Mesh(
-      new THREE.BoxGeometry(size.x, size.y, size.z),
+      new THREE.BoxGeometry(expandedSize.x, expandedSize.y, expandedSize.z),
       new THREE.MeshBasicMaterial({
         color: 0x8a6a00,
         transparent: true,
-        opacity: 0.08,
+        opacity: 0.05,
         depthTest: false,
         side: THREE.DoubleSide
       })
@@ -414,7 +446,7 @@
     fill.position.set(center.x, center.y, center.z)
     fill.renderOrder = 998
 
-    var geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z))
+    var geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(expandedSize.x, expandedSize.y, expandedSize.z))
     var material = new THREE.LineBasicMaterial({
       color: 0x8a6a00,
       transparent: true,
@@ -442,6 +474,8 @@
   }
 
   function injectErrorBlocks (scene, positions) {
+    disposeErrorBlocksMesh()
+
     var geometry = new THREE.BoxGeometry(1, 1, 1)
     var material = new THREE.MeshBasicMaterial({ map: makeMissingTexture() })
     var mesh = new THREE.InstancedMesh(geometry, material, positions.length)
@@ -455,6 +489,8 @@
     }
 
     mesh.instanceMatrix.needsUpdate = true
+    errorBlocksMesh = mesh
+    applyBoundingBoxClipping()
     scene.add(mesh)
     console.log('[error-blocks] rendered ' + positions.length + ' unrecognised block(s) as error placeholders')
   }
@@ -476,12 +512,22 @@
       }
     }, 100)
 
-    setTimeout(function () { clearInterval(poll) }, 60000)
-
-    var socket = io()
+    socket = io()
     socket.on('errorBlocks', function (positions) {
-      if (!positions || !positions.length) return
-      pendingErrorBlocks = positions
+      var nextPositions = filterErrorPositionsByBoundingBox(positions, currentBoundingBox)
+      if (!nextPositions || !nextPositions.length) {
+        pendingErrorBlocks = null
+        disposeErrorBlocksMesh()
+        return
+      }
+
+      if (window._pw_scene) {
+        injectErrorBlocks(window._pw_scene, nextPositions)
+        pendingErrorBlocks = null
+        return
+      }
+
+      pendingErrorBlocks = nextPositions
     })
 
     socket.on('structureAxis', function (config) {
@@ -501,6 +547,7 @@
       currentBoundingBox = nextConfig
       syncBoundingBoxControls()
       applyBoundingBoxClipping()
+      scheduleBoundingBoxFilterUpdate()
       pendingBoundingBox = nextConfig
       if (window._pw_scene) renderBoundingBox(window._pw_scene, nextConfig)
     })
