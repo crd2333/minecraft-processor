@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 
+// Example usage in a Python script:
+// ROOT = Path(__file__).resolve().parents[0]
+// MC_VOCAB_PATH = ROOT / "minecraft-processor" / "generated" / "block-vocab.1.21.4.json"
+// parsed = run_node_json(["node", "minecraft-processor/parse_mc_ids.js", structure_path, str(MC_VOCAB_PATH), "--entity-only", "--stdout", "--pretty"])
+// blocks = torch.tensor(parsed['blocks'], device='cuda')
+// print(f"Structure loaded with {blocks.shape[0]} blocks. Running pipeline...")
+
+
 const fs = require('fs').promises
 const path = require('path')
 const { detectStructureFormat, loadStructurePayload } = require('./utils/structure')
@@ -17,8 +25,6 @@ function showUsage () {
     '',
     'Options:',
     '  -v, --version <mc-version>  Minecraft version hint for .schem/.schematic parsing (optional)',
-    '  -r, --res <resolution>      Resolution restriction (optional, e.g. "64")',
-    '  -b, --base <x,y,z>          Base offset for resolution restriction; supports negative values (optional, e.g. "-3,0,0")',
     '      --include-air           Include air blocks (default: false)',
     '      --entity-only           Keep only entity blocks (non-entity blocks are ignored)',
     '      --stdout                Write JSON to stdout instead of a file',
@@ -32,30 +38,7 @@ function showUsage () {
   ].join('\n'))
 }
 
-function parseIntegerCoordinate (value, optionName) {
-  if (!/^-?\d+$/.test(value)) {
-    throw new Error(`Invalid value for ${optionName}, all coordinates must be integers`)
-  }
-
-  return parseInt(value, 10)
-}
-
-function parseBaseOffset (value) {
-  if (!value) throw new Error('Missing value for --base')
-
-  const parts = value.split(',').map((part) => part.trim())
-  if (parts.length !== 3) {
-    throw new Error('Invalid value for --base, must be in the format "x,y,z"')
-  }
-
-  return [
-    parseIntegerCoordinate(parts[0], '--base'),
-    parseIntegerCoordinate(parts[1], '--base'),
-    parseIntegerCoordinate(parts[2], '--base')
-  ]
-}
-
-function getBlockCoordinates (block, absolute, baseOffset) {
+function getBlockCoordinates (block, absolute) {
   if (absolute) {
     return {
       x: block.position.x,
@@ -72,14 +55,6 @@ function getBlockCoordinates (block, absolute, baseOffset) {
     }
   }
 
-  if (baseOffset) {
-    return {
-      x: block.position.x - baseOffset.x,
-      y: block.position.y - baseOffset.y,
-      z: block.position.z - baseOffset.z
-    }
-  }
-
   return {
     x: block.position.x,
     y: block.position.y,
@@ -87,33 +62,10 @@ function getBlockCoordinates (block, absolute, baseOffset) {
   }
 }
 
-function normalizeToBoundingBox (position, resolution, baseOffset) {
-  if (!resolution) return position
-
-  const baseX = baseOffset ? baseOffset[0] : 0
-  const baseY = baseOffset ? baseOffset[1] : 0
-  const baseZ = baseOffset ? baseOffset[2] : 0
-
-  if (
-    position.x < baseX || position.y < baseY || position.z < baseZ ||
-    position.x >= baseX + resolution || position.y >= baseY + resolution || position.z >= baseZ + resolution
-  ) {
-    return null
-  }
-
-  return {
-    x: position.x - baseX,
-    y: position.y - baseY,
-    z: position.z - baseZ
-  }
-}
-
 function parseArgs (argv) {
   const result = {
     positional: [],
     version: undefined,
-    resolution: 64,
-    base_offset: null,
     includeAir: false,
     entityOnly: false,
     absolute: false,
@@ -133,23 +85,6 @@ function parseArgs (argv) {
       const value = argv[i + 1]
       if (!value) throw new Error('Missing value for --version')
       result.version = value
-      i++
-      continue
-    }
-
-    if (arg === '-r' || arg === '--res') {
-      const value = argv[i + 1]
-      if (!value) throw new Error('Missing value for --res')
-      result.resolution = parseInt(value, 10)
-      if (isNaN(result.resolution) || result.resolution <= 0) {
-        throw new Error('Invalid value for --res, must be a positive integer')
-      }
-      i++
-      continue
-    }
-
-    if (arg === '-b' || arg === '--base') {
-      result.base_offset = parseBaseOffset(argv[i + 1])
       i++
       continue
     }
@@ -236,12 +171,11 @@ async function main () {
   }
 
   const payload = await loadStructurePayload(buffer, format, args, inputPath)
+
   const unknownCounts = {}
   const skippedNonEntityCounts = {}
   let unknownBlockCount = 0
   let skippedNonEntityBlockCount = 0
-
-  const baseOffset = payload.meta?.offset || null // base offset from the structure file (if any)
 
   const blocks = payload.blocks.flatMap((block) => {
     const resolved = resolveBlockIndex(block, vocabulary)
@@ -258,13 +192,39 @@ async function main () {
       return []
     }
 
-    const blockPosition = getBlockCoordinates(block, args.absolute, baseOffset)
-    const normalizedPosition = normalizeToBoundingBox(blockPosition, args.resolution, args.base_offset)
-
-    if (!normalizedPosition) return []
-
-    return [[normalizedPosition.x, normalizedPosition.y, normalizedPosition.z, resolved.index]]
+    const position = getBlockCoordinates(block, args.absolute)
+    return [[position.x, position.y, position.z, resolved.index]]
   })
+
+  const positions = blocks.map(([x, y, z]) => ({ x, y, z }))
+  const hasBlocks = positions.length > 0
+  const minPosition = hasBlocks
+    ? positions.reduce((minPos, pos) => ({
+      x: Math.min(minPos.x, pos.x),
+      y: Math.min(minPos.y, pos.y),
+      z: Math.min(minPos.z, pos.z)
+    }), { x: Infinity, y: Infinity, z: Infinity })
+    : { x: 0, y: 0, z: 0 }
+  const maxPosition = hasBlocks
+    ? positions.reduce((maxPos, pos) => ({
+      x: Math.max(maxPos.x, pos.x),
+      y: Math.max(maxPos.y, pos.y),
+      z: Math.max(maxPos.z, pos.z)
+    }), { x: -Infinity, y: -Infinity, z: -Infinity })
+    : { x: -1, y: -1, z: -1 }
+
+  const boundingBox = {
+    base: {
+      x: minPosition.x,
+      y: minPosition.y,
+      z: minPosition.z
+    },
+    size: {
+      x: hasBlocks ? maxPosition.x - minPosition.x + 1 : 0,
+      y: hasBlocks ? maxPosition.y - minPosition.y + 1 : 0,
+      z: hasBlocks ? maxPosition.z - minPosition.z + 1 : 0
+    }
+  }
 
   const output = {
     meta: {
@@ -274,31 +234,17 @@ async function main () {
       parserVersionHint: args.version || null,
       includeAir: args.includeAir,
       entityOnly: args.entityOnly,
-      coordinateSpace: args.absolute ? 'absolute' : 'relative',
-      boundingBox: args.resolution
-        ? {
-            base: {
-              x: args.base_offset ? args.base_offset[0] : 0,
-              y: args.base_offset ? args.base_offset[1] : 0,
-              z: args.base_offset ? args.base_offset[2] : 0
-            },
-            size: {
-              x: args.resolution,
-              y: args.resolution,
-              z: args.resolution
-            },
-            outputOrigin: { x: 0, y: 0, z: 0 }
-          }
-        : null,
-      vocabFile: vocabularyPath,
+      boundingBox,
+      // coordinateSpace: args.absolute ? 'absolute' : 'relative',
+      // vocabFile: vocabularyPath,
       vocabVersion: vocabulary.mcVersion || null,
-      unknownIndex: vocabulary.unknownIndex,
-      entityIndexRange: vocabulary.ranges?.entity || null,
-      nonEntityIndexRange: vocabulary.ranges?.nonEntity || null,
       inputBlockCount: payload.blocks.length,
       outputBlockCount: blocks.length,
+      unknownIndex: vocabulary.unknownIndex,
       unknownBlockCount,
       unknownBlockNames: summarizeUnknowns(unknownCounts),
+      entityIndexRange: vocabulary.ranges?.entity || null,
+      nonEntityIndexRange: vocabulary.ranges?.nonEntity || null,
       skippedNonEntityBlockCount,
       skippedNonEntityBlockNames: summarizeCounts(skippedNonEntityCounts),
       schema: {

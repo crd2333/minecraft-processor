@@ -52,5 +52,5 @@ Static viewer assets now live in `public/viewer.html`, `public/viewer-preload.js
 
 Vendored Prismarine viewer code remains isolated under `vendor/prismarine-viewer/`.
 
-## Fix
+## Packages Fix
 1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
