@@ -1,6 +1,11 @@
 const path = require('path')
 const nbt = require('prismarine-nbt')
 const { Schematic } = require('prismarine-schematic')
+const spongeSchematic = require('prismarine-schematic/lib/spongeSchematic')
+const mceditSchematic = require('prismarine-schematic/lib/mceditSchematic')
+const { parseBlockName, getStateId } = require('prismarine-schematic/lib/states')
+const { Vec3 } = require('vec3')
+const versions = require('minecraft-data').versions.pc
 
 function detectStructureFormat (inputPath) {
   const ext = path.extname(inputPath).toLowerCase()
@@ -123,6 +128,138 @@ async function parseNbtAuto (buffer) {
   }
 
   throw lastErr || new Error('Failed to parse NBT buffer')
+}
+
+function unwrapSchematicRoot (simplifiedNbt) {
+  if (!simplifiedNbt || typeof simplifiedNbt !== 'object') return simplifiedNbt
+  if (simplifiedNbt.Schematic && typeof simplifiedNbt.Schematic === 'object') {
+    return simplifiedNbt.Schematic
+  }
+  return simplifiedNbt
+}
+
+function looksLikeSpongeSchematic (nbtData) {
+  return Boolean(
+    nbtData &&
+    typeof nbtData === 'object' &&
+    nbtData.Palette &&
+    nbtData.BlockData &&
+    typeof nbtData.BlockData[Symbol.iterator] === 'function'
+  )
+}
+
+function looksLikeMcEditSchematic (nbtData) {
+  return Boolean(
+    nbtData &&
+    typeof nbtData === 'object' &&
+    Array.isArray(nbtData.Blocks) &&
+    Array.isArray(nbtData.Data)
+  )
+}
+
+function looksLikeSpongeV3Schematic (nbtData) {
+  return Boolean(
+    nbtData &&
+    typeof nbtData === 'object' &&
+    nbtData.Blocks &&
+    typeof nbtData.Blocks === 'object' &&
+    nbtData.Blocks.Palette &&
+    nbtData.Blocks.Data &&
+    typeof nbtData.Blocks.Data[Symbol.iterator] === 'function'
+  )
+}
+
+function findMinecraftVersion (dataVersion) {
+  for (const entry of versions) {
+    if (entry.dataVersion === dataVersion) return entry.minecraftVersion
+  }
+  return versions[0].minecraftVersion
+}
+
+function decodeVarintArray (values) {
+  const out = []
+  let i = 0
+
+  while (i < values.length) {
+    let value = 0
+    let varintLength = 0
+
+    while (true) {
+      const nextByte = Number(values[i++]) & 0xFF
+      value |= (nextByte & 127) << (varintLength++ * 7)
+      if (varintLength > 5) throw new Error('VarInt too big (probably corrupted data)')
+      if ((nextByte & 128) !== 128) break
+      if (i >= values.length) throw new Error('Unexpected end of varint data in schematic')
+    }
+
+    out.push(value)
+  }
+
+  return out
+}
+
+function createSchematicFromSpongeV3 (nbtData, versionHint) {
+  const width = Number(nbtData.Width)
+  const height = Number(nbtData.Height)
+  const length = Number(nbtData.Length)
+  if (![width, height, length].every(Number.isFinite)) {
+    throw new Error('Invalid Sponge v3 schematic dimensions')
+  }
+
+  const volume = width * height * length
+  const offsetArray = Array.isArray(nbtData.Offset) ? nbtData.Offset : [0, 0, 0]
+  const offset = new Vec3(Number(offsetArray[0] || 0), Number(offsetArray[1] || 0), Number(offsetArray[2] || 0))
+  const version = versionHint || findMinecraftVersion(Number(nbtData.DataVersion))
+  const mcData = require('minecraft-data')(version)
+
+  const palette = []
+  for (const [blockStateString, paletteIndexRaw] of Object.entries(nbtData.Blocks.Palette || {})) {
+    const paletteIndex = Number(paletteIndexRaw)
+    if (!Number.isFinite(paletteIndex) || paletteIndex < 0) continue
+    const { name, properties } = parseBlockName(blockStateString)
+    palette[paletteIndex] = getStateId(mcData, name, properties)
+  }
+
+  for (let i = 0; i < palette.length; i++) {
+    if (palette[i] === undefined) palette[i] = 0
+  }
+
+  const rawData = Array.from(nbtData.Blocks.Data, (value) => Number(value))
+  const blocks = rawData.length === volume ? rawData : decodeVarintArray(rawData)
+  if (blocks.length !== volume) {
+    throw new Error(`Invalid Sponge v3 block data length: got ${blocks.length}, expected ${volume}`)
+  }
+
+  return new Schematic(version, new Vec3(width, height, length), offset, palette, blocks)
+}
+
+async function readSchematicWithFallback (buffer, versionHint) {
+  try {
+    return await Schematic.read(buffer, versionHint)
+  } catch (primaryError) {
+    const nbtInfo = await parseNbtAuto(buffer)
+    const unwrapped = unwrapSchematicRoot(nbtInfo.simplified)
+
+    try {
+      if (looksLikeSpongeV3Schematic(unwrapped)) {
+        return createSchematicFromSpongeV3(unwrapped, versionHint)
+      }
+
+      if (looksLikeSpongeSchematic(unwrapped)) {
+        return spongeSchematic.read(unwrapped, versionHint)
+      }
+
+      if (looksLikeMcEditSchematic(unwrapped)) {
+        return mceditSchematic.read(unwrapped, versionHint)
+      }
+    } catch (fallbackError) {
+      throw new Error(
+        `Failed to parse schematic with native and fallback readers: ${fallbackError.message || fallbackError}`
+      )
+    }
+
+    throw primaryError
+  }
 }
 
 function stableStringify (value) {
@@ -300,7 +437,7 @@ function buildMeta ({
 }
 
 async function parseSchematicLike (buffer, options, sourcePath, sourceFormat) {
-  const schematic = await Schematic.read(buffer, options.version)
+  const schematic = await readSchematicWithFallback(buffer, options.version)
   const blocks = []
   const paletteAcc = createPaletteAccumulator()
 

@@ -4,14 +4,20 @@ const fs = require('fs').promises
 const path = require('path')
 const { detectStructureFormat, loadStructurePayload } = require('./utils/structure')
 
+process.stdout.on('error', (err) => {
+  if (err?.code === 'EPIPE') process.exit(0)
+  throw err
+})
+
 function showUsage () {
   console.log([
     'Usage:',
-    '  node parse-schem.js <input.{schem|schematic|litematic|nbt|mcstructure}> [output.json] [options]',
+    '  node parse_mc.js <input.{schem|schematic|litematic|nbt|mcstructure}> [output.json] [options]',
     '',
     'Options:',
     '  -v, --version <mc-version>  Minecraft version hint for .schem/.schematic parsing (optional)',
     '      --include-air           Include air blocks (default: false)',
+    '      --stdout                Write JSON to stdout instead of a file',
     '      --pretty                Pretty-print JSON output',
     '  -h, --help                  Show this help',
     '',
@@ -25,6 +31,7 @@ function parseArgs (argv) {
     positional: [],
     version: undefined,
     includeAir: false,
+    stdout: false,
     pretty: false
   }
 
@@ -46,6 +53,11 @@ function parseArgs (argv) {
 
     if (arg === '--include-air') {
       result.includeAir = true
+      continue
+    }
+
+    if (arg === '--stdout') {
+      result.stdout = true
       continue
     }
 
@@ -88,11 +100,23 @@ async function main () {
   const buffer = await fs.readFile(inputPath)
   const payload = await loadStructurePayload(buffer, detectedFormat, args, inputPath)
 
+  if (detectedFormat === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
+    throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
+  }
+
+  const json = JSON.stringify(payload, null, args.pretty ? 2 : 0)
+
+  if (args.stdout) {
+    process.stdout.write(`${json}\n`)
+    return
+  }
+
   await fs.mkdir(path.dirname(outputPath), { recursive: true })
-  await fs.writeFile(outputPath, JSON.stringify(payload, null, args.pretty ? 2 : 0), 'utf8')
+  await fs.writeFile(outputPath, json, 'utf8')
 
   console.log(`Parsed ${inputPath}`)
   console.log(`Detected format: ${detectedFormat}`)
+  console.log(`Normalized format: ${payload.meta?.normalizedFormat || 'unknown'}`)
   console.log(`Blocks: ${payload.meta.outputBlockCount}, Palette: ${payload.meta.paletteCount}`)
   console.log(`Wrote JSON to ${outputPath}`)
 }

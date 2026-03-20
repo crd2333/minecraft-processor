@@ -228,31 +228,7 @@ const main = async () => {
   let errorPositions = []
   let structureAxis = null
   let structureOriginWorldPos = null
-  if (format === 'schem' || format === 'schematic') {
-    // Schematic has a native paste() that resolves stateIds correctly
-    const schem = await Schematic.read(buffer, version)
-    await schem.paste(world, DEFAULT_PASTE_ORIGIN)
-    structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
-    const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
-    structureAxis = {
-      origin: {
-        x: Number(schem.offset.x || 0),
-        y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
-        z: Number(schem.offset.z || 0)
-      },
-      length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
-    }
-    center = centerArg || new Vec3(
-      Math.floor(schem.size.x / 2),
-      60 + Math.floor(schem.size.y / 2),
-      Math.floor(schem.size.z / 2)
-    )
-  } else {
-    const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, inputPath)
-    if (format === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
-      throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
-    }
-
+  const applyPayloadToWorld = async (payload) => {
     const Block = require('prismarine-block')(version)
     const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
     errorPositions = result.errorPositions
@@ -266,6 +242,39 @@ const main = async () => {
       60 + Math.floor(result.size.y / 2),
       Math.floor(result.size.z / 2)
     )
+  }
+
+  if (format === 'schem' || format === 'schematic') {
+    // Schematic has a native paste() that resolves stateIds correctly
+    try {
+      const schem = await Schematic.read(buffer, version)
+      await schem.paste(world, DEFAULT_PASTE_ORIGIN)
+      structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
+      const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
+      structureAxis = {
+        origin: {
+          x: Number(schem.offset.x || 0),
+          y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
+          z: Number(schem.offset.z || 0)
+        },
+        length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
+      }
+      center = centerArg || new Vec3(
+        Math.floor(schem.size.x / 2),
+        60 + Math.floor(schem.size.y / 2),
+        Math.floor(schem.size.z / 2)
+      )
+    } catch (nativeSchemError) {
+      console.warn(`Warning: native schematic parser failed (${nativeSchemError.message || nativeSchemError}). Falling back to generic parser.`)
+      const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, inputPath)
+      await applyPayloadToWorld(payload)
+    }
+  } else {
+    const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, inputPath)
+    if (format === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
+      throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
+    }
+    await applyPayloadToWorld(payload)
   }
 
   const boundingBox = showBoundingBox
@@ -329,10 +338,33 @@ const main = async () => {
     })
   })
 
-  http.listen(port, () => {
-    console.log(`Prismarine viewer web server running on *:${port}`)
-  })
+  // try port first, if fails (e.g. in use) then keep incrementing until we find an open port
+  let currentPort = port
+  const maxPort = port + 100
+  while (currentPort < maxPort) {
+    try {
+      await new Promise((resolve, reject) => {
+        http.listen(currentPort, () => {
+          resolve()
+        }).on('error', (err) => {
+          reject(err)
+        })
+      })
+      break // if we successfully started the server, exit the loop
+    } catch (err) {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`Port ${currentPort} in use, trying ${currentPort + 1}...`)
+        currentPort++
+      } else {
+        throw err
+      }
+    }
+  }
+  if (currentPort === maxPort) {
+    throw new Error(`No available ports found between ${port} and ${maxPort - 1}`)
+  }
 
+  console.log(`Prismarine viewer web server running on *:${currentPort}`)
   console.log(`Structure loaded: ${inputPath} (format: ${format})`)
   console.log(`Structure size (x,y,z): ${structureAxis.length},${structureAxis.length},${structureAxis.length}`)
   if (boundingBox) {
@@ -340,7 +372,7 @@ const main = async () => {
     console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)
     console.log(`parse_mc_ids args: ${formatBoundingBoxArgsPreview(boundingBox)}`)
   }
-  console.log(`Open http://127.0.0.1:${port}`)
+  console.log(`Open http://127.0.0.1:${currentPort}`)
 }
 
 main().catch((error) => {
