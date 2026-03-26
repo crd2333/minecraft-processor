@@ -108,7 +108,7 @@ function getLiquidRenderHeight (world, block, type) {
   return ((block.metadata >= 8 ? 8 : 7 - block.metadata) + 1) / 9
 }
 
-function renderLiquid (world, cursor, texture, type, biome, water, attr) {
+function renderLiquid (world, cursor, texture, type, biome, water, attr, blockStateId) {
   const heights = []
   for (let z = -1; z <= 1; z++) {
     for (let x = -1; x <= 1; x++) {
@@ -155,6 +155,7 @@ function renderLiquid (world, cursor, texture, type, biome, water, attr) {
       attr.t_normals.push(...dir)
       attr.t_uvs.push(pos[3] * su + u, pos[4] * sv * (pos[1] ? 1 : height) + v)
       attr.t_colors.push(tint[0], tint[1], tint[2])
+      if (attr.t_blockIds) attr.t_blockIds.push(blockStateId)
     }
   }
 }
@@ -228,7 +229,7 @@ function buildRotationMatrix (axis, degree) {
   return matrix
 }
 
-function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome) {
+function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome, blockStateId) {
   const cullIfIdentical = block.name.indexOf('glass') >= 0
 
   for (const face in element.faces) {
@@ -346,6 +347,7 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
       }
 
       attr.colors.push(tint[0] * light, tint[1] * light, tint[2] * light)
+      if (attr.blockIds) attr.blockIds.push(blockStateId)
     }
 
     if (doAO && aos[0] + aos[3] >= aos[1] + aos[2]) {
@@ -371,12 +373,16 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
     normals: [],
     colors: [],
     uvs: [],
+    blockIds: [],
     t_positions: [],
     t_normals: [],
     t_colors: [],
     t_uvs: [],
+    t_blockIds: [],
     indices: []
   }
+
+  const stateIdToName = {}
 
   const cursor = new Vec3(0, 0, 0)
   for (cursor.y = sy; cursor.y < sy + 16; cursor.y++) {
@@ -388,13 +394,19 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
           block.variant = getModelVariants(block, blocksStates)
         }
 
+        if (block.stateId !== undefined && block.name && !(block.stateId in stateIdToName)) {
+          stateIdToName[block.stateId] = block.name
+        }
+
         for (const variant of block.variant) {
           if (!variant || !variant.model) continue
 
+          const blockStateId = block.stateId !== undefined ? block.stateId : 0
+
           if (block.name === 'water') {
-            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, true, attr)
+            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, true, attr, blockStateId)
           } else if (block.name === 'lava') {
-            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, false, attr)
+            renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, false, attr, blockStateId)
           } else {
             let globalMatrix = null
             let globalShift = null
@@ -412,7 +424,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
             }
 
             for (const element of variant.model.elements) {
-              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome)
+              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome, blockStateId)
             }
           }
         }
@@ -436,16 +448,20 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
   attr.normals.push(...attr.t_normals)
   attr.colors.push(...attr.t_colors)
   attr.uvs.push(...attr.t_uvs)
+  attr.blockIds.push(...attr.t_blockIds)
 
   delete attr.t_positions
   delete attr.t_normals
   delete attr.t_colors
   delete attr.t_uvs
+  delete attr.t_blockIds
 
   attr.positions = new Float32Array(attr.positions)
   attr.normals = new Float32Array(attr.normals)
   attr.colors = new Float32Array(attr.colors)
   attr.uvs = new Float32Array(attr.uvs)
+  attr.blockIds = new Float32Array(attr.blockIds)
+  attr.stateIdToName = stateIdToName
 
   return attr
 }

@@ -54,5 +54,60 @@ The browser page is no longer embedded in `serve_mc.js`. Static viewer assets no
 
 Vendored Prismarine viewer code remains isolated under `vendor/prismarine-viewer/`.
 
-## Packages Fix
+## Packages Fix/Modification
 1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
+2. Added depth map and segmentation map rendering support (modifications to vendored PrismarineJS viewer):
+   - `vendor/prismarine-viewer/lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
+   - `vendor/prismarine-viewer/lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
+   - `vendor/prismarine-viewer/lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
+
+## Depth Map & Segmentation Map
+
+The viewer can capture three special render passes from the current camera view:
+
+- **Depth Map** (`depth_map.png`): Linear grayscale depth. `d = (viewDepth - near) / (far - near)`, black = near, white = far.
+- **Segmentation ID Map** (`segmentation_id.png`): Each pixel's RGB encodes the block `stateId` as `R*65536 + G*256 + B`. Background/air is black `(0,0,0)`. This provides a unique mapping per block state.
+- **Segmentation Color Map** (`segmentation_color.png`): Each pixel uses a human-readable color from `generated/mc_mappings.json` based on block type. Multiple block types may share the same color.
+
+**Capture All + Meta** downloads all three images plus a `capture_metadata.json` containing:
+- Camera near/far planes for depth reconstruction
+- Complete stateId → block name + RGB encoding table
+- Color mapping reference from mc_mappings
+
+All three maps preserve the actual block geometry (flowers render as cross-planes, slabs as half-blocks, stairs as stepped shapes, etc.) because the rendering uses the same vertex geometry as the normal textured view — only the material/shader is swapped during capture.
+
+## GBuffer Export (current)
+
+The viewer panel now exposes a single button:
+
+- **Render GBuffer (.bin)**
+- Optional checkbox: **Seg uses mc_mappings color** (unchecked = stateId RGB encoding)
+- Optional checkbox: **Force square render** and size input (default 512)
+- Optional checkbox: **Show square guide** overlays a visible square crop guide in the viewer
+
+Output file: `gbuffer.bin`
+
+### Binary layout
+
+1. Header (16 bytes)
+   - `magic[8] = "MCGBUF01"`
+   - `version (uint32 LE)`
+   - `metadataLength (uint32 LE)`
+2. `metadata` JSON UTF-8 bytes
+3. Raw channel blobs (concatenated):
+   - `rgb`: uint8 RGBA, shape `[H, W, 4]` (includes alpha from texture/material transparency)
+   - `depth`: float16, shape `[H, W]`, **metric depth z** (world units). Background is `+Inf`.
+   - `seg`: uint8 RGBA, shape `[H, W, 4]` (`id` mode or `color` mode)
+   - `mask`: uint8, shape `[H, W]`, value 1 if any fragment exists (opaque/translucent), else 0
+
+Depth is already decoded to metric `z` and stored directly as float16.
+
+### Python reader (headless-friendly)
+
+Use:
+
+```bash
+python scripts/read_gbuffer.py gbuffer.bin --save --out gbuffer_out
+```
+
+This script prints tensor stats and writes `.npy` arrays always. If `imageio` is available, it also writes PNG previews (`rgb.png`, `seg.png`, `mask.png`, `depth_norm.png`) for remote/headless inspection.

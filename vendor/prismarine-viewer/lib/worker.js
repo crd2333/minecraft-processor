@@ -77,7 +77,7 @@ setInterval(() => {
     if (chunk && chunk.sections[Math.floor(y / 16)]) {
       delete dirtySections[key]
       const geometry = getSectionGeometry(x, y, z, world, blocksStates)
-      const transferable = [geometry.positions.buffer, geometry.normals.buffer, geometry.colors.buffer, geometry.uvs.buffer]
+      const transferable = [geometry.positions.buffer, geometry.normals.buffer, geometry.colors.buffer, geometry.uvs.buffer, geometry.blockIds.buffer]
       postMessage({ type: 'geometry', key, geometry }, transferable)
     }
     postMessage({ type: 'sectionFinished', key })

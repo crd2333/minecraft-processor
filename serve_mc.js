@@ -296,6 +296,7 @@ const main = async () => {
 
   app.use(compression())
   app.use('/', express.static(PUBLIC_DIR))
+  app.use('/generated', express.static(path.join(__dirname, 'generated')))
 
   const sockets = []
 

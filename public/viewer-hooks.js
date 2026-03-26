@@ -12,14 +12,22 @@
   panel.innerHTML = [
     '<div class="panel-section">',
     '<div class="panel-title">Viewer</div>',
-    '<button id="btn-toggle-axes">Hide Axes</button>',
+    '<button id="btn-export">\u2B07 Export</button>',
+    '<select id="export-format">',
+    '<option value="obj">OBJ</option>',
+    '<option value="stl">STL</option>',
+    '<option value="glb">GLB</option>',
+    '</select>',
     '<button id="btn-screenshot">\u{1F4F7} Screenshot</button>',
-    '<button id="btn-export-obj">\u2B07 Export OBJ</button>',
-    '<button id="btn-export-stl">\u2B07 Export STL</button>',
-    '<button id="btn-export-glb">\u2B07 Export GLB</button>',
+    '<button id="btn-render-gbuffer">\u{1F4F7} Render GBuffer (.bin)</button>',
+    '<label class="panel-checkbox"><input type="checkbox" id="gbuffer-use-color-seg"> Seg uses mapping color</label>',
+    '<label class="panel-checkbox"><input type="checkbox" id="gbuffer-square" checked> Force square render</label>',
+    '<label class="panel-checkbox"><input type="checkbox" id="gbuffer-show-guide"> Show square guide</label>',
+    '<label class="panel-checkbox">Size <input id="gbuffer-size" type="number" min="64" step="64" value="512"></label>',
     '</div>',
     '<div class="panel-section" id="bbox-panel">',
-    '<div class="panel-title">Bounding Box</div>',
+    '<div class="panel-title">Auxiliary</div>',
+    '<label class="panel-checkbox"><input type="checkbox" id="axis-visible" checked> Show Axes</label>',
     '<label class="panel-checkbox"><input type="checkbox" id="bbox-enabled" checked> Show bounding box</label>',
     '<label class="panel-checkbox"><input type="checkbox" id="bbox-hide-outside"> Hide outside blocks</label>',
     '<div class="field-grid">',
@@ -31,13 +39,8 @@
     '<label>Size Z<input id="bbox-size-z" type="number" min="1" step="1"></label>',
     '</div>',
     '<div class="panel-actions">',
+    '<button id="bbox-reset-origin">Reset Origin</button>',
     '<button id="bbox-reset-cube">Reset 64^3</button>',
-    '<button id="bbox-copy-args">Copy parse args</button>',
-    '</div>',
-    '<div class="command-block">',
-    '<div class="command-label">parse_mc_ids args</div>',
-    '<textarea id="bbox-command" rows="3" readonly></textarea>',
-    '<div id="bbox-command-hint" class="command-hint"></div>',
     '</div>',
     '</div>',
     '<div id="export-status"></div>'
@@ -66,57 +69,191 @@
 
   function bindExportButtons () {
     document.getElementById('btn-screenshot').addEventListener('click', function () {
-      var canvas = window._pw_canvas || document.querySelector('canvas')
-      if (!canvas) { setStatus('Canvas not found'); return }
+      if (!window.__captureScreenshot) { setStatus('Capture API not ready'); return }
       try {
-        var dataUrl = canvas.toDataURL('image/png')
+        var forceSquare = document.getElementById('gbuffer-square').checked
+        var renderSize = Number(document.getElementById('gbuffer-size').value) || 512
+        renderSize = Math.max(64, Math.min(4096, Math.round(renderSize)))
+        var shot = window.__captureScreenshot({ square: forceSquare, size: renderSize })
+
+        var dataUrl = shot.dataUrl
         var anchor = document.createElement('a')
         anchor.href = dataUrl
         anchor.download = 'screenshot.png'
         document.body.appendChild(anchor)
         anchor.click()
         document.body.removeChild(anchor)
-        setStatus('Screenshot saved.')
+        setStatus('Screenshot saved (' + shot.width + 'x' + shot.height + ', transparent bg).')
       } catch (error) {
         setStatus('Screenshot failed: ' + error.message)
       }
     })
 
-    document.getElementById('btn-export-obj').addEventListener('click', function () {
+    document.getElementById('btn-export').addEventListener('click', function () {
+      var formatSelect = document.getElementById('export-format')
+      var format = formatSelect ? formatSelect.value : 'obj'
       if (!window._pw_scene) { setStatus('Scene not ready yet'); return }
       try {
-        var result = new THREE.OBJExporter().parse(window._pw_scene)
-        downloadBlob(new Blob([result], { type: 'text/plain' }), 'model.obj')
-        setStatus('OBJ downloaded.')
+        if (format === 'obj') {
+          var result = new THREE.OBJExporter().parse(window._pw_scene)
+          downloadBlob(new Blob([result], { type: 'text/plain' }), 'model.obj')
+          setStatus('OBJ downloaded.')
+          return
+        }
+
+        if (format === 'stl') {
+          var stl = new THREE.STLExporter().parse(window._pw_scene, { binary: true })
+          var buffer = stl instanceof ArrayBuffer ? stl : stl.buffer || stl
+          downloadBlob(new Blob([buffer], { type: 'application/octet-stream' }), 'model.stl')
+          setStatus('STL downloaded.')
+          return
+        }
+
+        if (format === 'glb') {
+          new THREE.GLTFExporter().parse(window._pw_scene, function (glb) {
+            var buffer = glb instanceof ArrayBuffer ? glb : glb.buffer || glb
+            downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), 'model.glb')
+            setStatus('GLB downloaded.')
+          }, { binary: true })
+          return
+        }
       } catch (error) {
         setStatus('Error: ' + error.message)
       }
     })
 
-    document.getElementById('btn-export-stl').addEventListener('click', function () {
-      if (!window._pw_scene) { setStatus('Scene not ready yet'); return }
-      try {
-        var result = new THREE.STLExporter().parse(window._pw_scene, { binary: true })
-        var buffer = result instanceof ArrayBuffer ? result : result.buffer || result
-        downloadBlob(new Blob([buffer], { type: 'application/octet-stream' }), 'model.stl')
-        setStatus('STL downloaded.')
-      } catch (error) {
-        setStatus('Error: ' + error.message)
+    // --- Depth / Segmentation capture buttons ---
+
+    var cachedMcMappings = null
+
+    function loadMcMappings () {
+      if (cachedMcMappings) return Promise.resolve(cachedMcMappings)
+      return fetch('/generated/mc_mappings.json')
+        .then(function (res) { return res.text() })
+        .then(function (text) {
+          // mc_mappings.json may have comments, strip all single-line comments
+          var cleaned = text.replace(/^\s*\/\/.*$/gm, '')
+          cachedMcMappings = JSON.parse(cleaned)
+          return cachedMcMappings
+        })
+    }
+
+    /**
+     * Normalize mc_mappings keys to match minecraft block names.
+     * mc_mappings uses keys like "Acacia_Door" or "Furnace__Blast_Furnace"
+     * Block names from prismarine are like "acacia_door" or "blast_furnace"
+     * Build a blockName → color map considering both the primary key and sub-keys.
+     */
+    function buildColorMapFromMappings (mappings) {
+      var colorMap = {}
+      for (var key in mappings) {
+        if (!Object.prototype.hasOwnProperty.call(mappings, key)) continue
+        var entry = mappings[key]
+        var color = entry.color
+        if (!color) continue
+
+        // Handle compound keys like "Furnace__Blast_Furnace"
+        var parts = key.split('__')
+        for (var i = 0; i < parts.length; i++) {
+          var normalized = parts[i].toLowerCase()
+          if (!colorMap[normalized]) {
+            colorMap[normalized] = color
+          }
+        }
       }
+
+      // Extra aliases from encountered block names in renderer map:
+      // uppercase/lowercase and hyphen/underscore tolerance
+      var aliases = {}
+      for (var n in colorMap) {
+        if (!Object.prototype.hasOwnProperty.call(colorMap, n)) continue
+        aliases[n.replace(/-/g, '_')] = colorMap[n]
+        aliases[n.replace(/_/g, '-') ] = colorMap[n]
+      }
+      for (var a in aliases) {
+        if (!Object.prototype.hasOwnProperty.call(aliases, a)) continue
+        if (!colorMap[a]) colorMap[a] = aliases[a]
+      }
+
+      return colorMap
+    }
+
+    function updateGBufferGuide () {
+      var showGuide = document.getElementById('gbuffer-show-guide')
+      var forceSquare = document.getElementById('gbuffer-square')
+      if (!showGuide || !forceSquare) return
+
+      var shouldShow = showGuide.checked && forceSquare.checked
+      if (!shouldShow) {
+        if (gbufferGuideElement && gbufferGuideElement.parentNode) {
+          gbufferGuideElement.parentNode.removeChild(gbufferGuideElement)
+        }
+        gbufferGuideElement = null
+        return
+      }
+
+      if (!gbufferGuideElement) {
+        gbufferGuideElement = document.createElement('div')
+        gbufferGuideElement.style.position = 'fixed'
+        gbufferGuideElement.style.left = '50%'
+        gbufferGuideElement.style.top = '50%'
+        gbufferGuideElement.style.transform = 'translate(-50%, -50%)'
+        gbufferGuideElement.style.border = '2px dashed rgba(255,255,255,0.8)'
+        gbufferGuideElement.style.boxShadow = '0 0 0 9999px rgba(0,0,0,0.25)'
+        gbufferGuideElement.style.pointerEvents = 'none'
+        gbufferGuideElement.style.zIndex = '999'
+        document.body.appendChild(gbufferGuideElement)
+      }
+
+      var side = Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.85)
+      gbufferGuideElement.style.width = side + 'px'
+      gbufferGuideElement.style.height = side + 'px'
+    }
+
+    document.getElementById('btn-render-gbuffer').addEventListener('click', function () {
+      if (!window.__captureGBuffer) { setStatus('Capture API not ready'); return }
+      var useColorSeg = document.getElementById('gbuffer-use-color-seg').checked
+      var segMode = useColorSeg ? 'color' : 'id'
+
+      setStatus('Rendering gbuffer...')
+
+      var run = function (colorMap) {
+        try {
+          var forceSquare = document.getElementById('gbuffer-square').checked
+          var renderSize = Number(document.getElementById('gbuffer-size').value) || 512
+          renderSize = Math.max(64, Math.min(4096, Math.round(renderSize)))
+          var result = window.__captureGBuffer({
+            segMode: segMode,
+            colorMap: colorMap || {},
+            square: forceSquare,
+            size: renderSize
+          })
+          downloadBlob(result.blob, 'gbuffer.bin')
+          setStatus('gbuffer.bin saved (' + segMode + ', ' + (forceSquare ? (renderSize + 'x' + renderSize) : 'canvas size') + ').')
+        } catch (error) {
+          setStatus('GBuffer render failed: ' + error.message)
+        }
+      }
+
+      if (!useColorSeg) {
+        run({})
+        return
+      }
+
+      loadMcMappings().then(function (mappings) {
+        run(buildColorMapFromMappings(mappings))
+      }).catch(function (error) {
+        setStatus('Failed to load mc_mappings: ' + error.message)
+      })
     })
 
-    document.getElementById('btn-export-glb').addEventListener('click', function () {
-      if (!window._pw_scene) { setStatus('Scene not ready yet'); return }
-      try {
-        new THREE.GLTFExporter().parse(window._pw_scene, function (glb) {
-          var buffer = glb instanceof ArrayBuffer ? glb : glb.buffer || glb
-          downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), 'model.glb')
-          setStatus('GLB downloaded.')
-        }, { binary: true })
-      } catch (error) {
-        setStatus('Error: ' + error.message)
-      }
+    ;['gbuffer-square', 'gbuffer-show-guide'].forEach(function (id) {
+      var elem = document.getElementById(id)
+      if (!elem) return
+      elem.addEventListener('change', updateGBufferGuide)
     })
+    window.addEventListener('resize', updateGBufferGuide)
+    updateGBufferGuide()
   }
 
   function makeMissingTexture () {
@@ -145,6 +282,7 @@
   var axisVisible = true
   var axisGroup = null
   var boundingBoxGroup = null
+  var gbufferGuideElement = null
   var errorBlocksMesh = null
   var BOUNDING_BOX_RENDER_PADDING = 0.03
   var socket = null
@@ -233,27 +371,6 @@
     return Number.isFinite(value) ? value : fallback
   }
 
-  function updateBoundingBoxCommandPreview () {
-    var command = document.getElementById('bbox-command')
-    var hint = document.getElementById('bbox-command-hint')
-    if (!command || !hint || !currentBoundingBox) return
-
-    var relativeOrigin = currentBoundingBox.relativeOrigin
-    var size = currentBoundingBox.size
-    var isCube = size.x === size.y && size.y === size.z
-    var baseArg = '--base ' + relativeOrigin.x + ',' + relativeOrigin.y + ',' + relativeOrigin.z
-    var sizeArg = isCube
-      ? '--res ' + size.x
-      : '--bbox-size ' + size.x + ',' + size.y + ',' + size.z
-
-    command.value = [baseArg, sizeArg].join(' ')
-    if (isCube) {
-      hint.textContent = 'Current box maps directly to parse_mc_ids.js.'
-    } else {
-      hint.textContent = 'parse_mc_ids.js currently accepts only cubic --res values; this preview keeps the full box size for reference.'
-    }
-  }
-
   function syncBoundingBoxControls () {
     if (!currentBoundingBox) return
     var enabled = document.getElementById('bbox-enabled')
@@ -267,7 +384,6 @@
     setInputValue('bbox-size-x', currentBoundingBox.size.x)
     setInputValue('bbox-size-y', currentBoundingBox.size.y)
     setInputValue('bbox-size-z', currentBoundingBox.size.z)
-    updateBoundingBoxCommandPreview()
   }
 
   function updateBoundingBoxFromControls () {
@@ -327,21 +443,20 @@
       setStatus('Bounding box reset to 64x64x64 at 0,0,0.')
     })
 
-    document.getElementById('bbox-copy-args').addEventListener('click', function () {
-      var command = document.getElementById('bbox-command')
-      if (!command || !command.value) return
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(command.value).then(function () {
-          setStatus('parse_mc_ids args copied.')
-        }).catch(function () {
-          command.select()
-          setStatus('Clipboard unavailable; selected args instead.')
-        })
-      } else {
-        command.select()
-        setStatus('Clipboard unavailable; selected args instead.')
+    document.getElementById('bbox-reset-origin').addEventListener('click', function () {
+      if (!currentBoundingBox) return
+      currentBoundingBox.relativeOrigin = { x: 0, y: 0, z: 0 }
+      currentBoundingBox.origin = {
+        x: currentBoundingBox.structureOrigin.x + currentBoundingBox.relativeOrigin.x,
+        y: currentBoundingBox.structureOrigin.y + currentBoundingBox.relativeOrigin.y,
+        z: currentBoundingBox.structureOrigin.z + currentBoundingBox.relativeOrigin.z
       }
+      syncBoundingBoxControls()
+      updateBoundingBoxFromControls()
+      setStatus('Bounding box origin reset to 0,0,0.')
     })
+
+
   }
 
   function disposeAxisGroup () {
@@ -355,9 +470,9 @@
   }
 
   function updateAxisButtonLabel () {
-    var button = document.getElementById('btn-toggle-axes')
-    if (!button) return
-    button.textContent = axisVisible ? 'Hide Axes' : 'Show Axes'
+    var checkbox = document.getElementById('axis-visible')
+    if (!checkbox) return
+    checkbox.checked = !!axisVisible
   }
 
   function disposeBoundingBoxGroup () {
@@ -465,10 +580,11 @@
   }
 
   function bindAxisToggle () {
-    document.getElementById('btn-toggle-axes').addEventListener('click', function () {
-      axisVisible = !axisVisible
+    var checkbox = document.getElementById('axis-visible')
+    if (!checkbox) return
+    checkbox.addEventListener('change', function () {
+      axisVisible = !!checkbox.checked
       if (axisGroup) axisGroup.visible = axisVisible
-      updateAxisButtonLabel()
     })
     updateAxisButtonLabel()
   }
