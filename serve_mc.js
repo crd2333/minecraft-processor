@@ -8,6 +8,40 @@ const { buildWorldFromPayload } = require('./utils/worldBuilder')
 const THREE_EXPORTERS_DIR = path.join(__dirname, 'node_modules/three/examples/js/exporters')
 const PUBLIC_DIR = path.join(__dirname, 'public')
 const DEFAULT_PASTE_ORIGIN = new Vec3(0, 60, 0)
+const SUPPORTED_ASSET_EXTENSIONS = new Set(['.schem', '.schematic', '.litematic', '.nbt', '.mcstructure'])
+
+function normalizePathForClient (value) {
+  return value.split(path.sep).join('/')
+}
+
+function isPathInsideBase (baseDir, targetPath) {
+  const relative = path.relative(baseDir, targetPath)
+  return !(relative.startsWith('..') || path.isAbsolute(relative))
+}
+
+async function listStructureAssets (baseDir) {
+  const assets = []
+
+  async function walk (dirPath) {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        await walk(fullPath)
+        continue
+      }
+
+      if (!entry.isFile()) continue
+      if (!SUPPORTED_ASSET_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue
+
+      assets.push(normalizePathForClient(path.relative(baseDir, fullPath)))
+    }
+  }
+
+  await walk(baseDir)
+  assets.sort((a, b) => a.localeCompare(b))
+  return assets
+}
 
 function parseVec3Option (value, optionName) {
   if (!value) throw new Error(`Missing value for ${optionName}`)
@@ -109,14 +143,14 @@ function filterErrorPositionsForBoundingBox (positions, boundingBox) {
 function formatBoundingBoxArgsPreview (boundingBox) {
   if (!boundingBox || !boundingBox.relativeOrigin || !boundingBox.size) return null
 
-  const base = `--base ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`
+  const base = `--bbox-origin ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`
   const isCube = boundingBox.size.x === boundingBox.size.y && boundingBox.size.y === boundingBox.size.z
 
   if (isCube) {
-    return `${base} --res ${boundingBox.size.x}`
+    return `${base} --bbox-size ${boundingBox.size.x}`
   }
 
-  return `${base} --bbox-size ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z} (reference only; parse_mc_ids.js currently supports cubic --res only)`
+  return `${base} --bbox-size ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`
 }
 
 const parseArgs = (argv) => {
@@ -216,11 +250,32 @@ const main = async () => {
 
   const World = require('prismarine-world')(version)
   const Chunk = require('prismarine-chunk')(version)
-  const world = new World(() => new Chunk())
+  let world = new World(() => new Chunk())
 
-  const inputPath = path.resolve(process.cwd(), inputArg)
-  const buffer = await fs.readFile(inputPath)
-  const format = detectStructureFormat(inputPath)
+  const initialInputPath = path.resolve(process.cwd(), inputArg)
+  const assetBaseDir = path.dirname(initialInputPath)
+
+  function toClientAssetPath (absolutePath) {
+    return normalizePathForClient(path.relative(assetBaseDir, absolutePath))
+  }
+
+  function resolveAssetPath (assetRef) {
+    if (typeof assetRef !== 'string' || !assetRef.trim()) {
+      throw new Error('Missing asset path')
+    }
+
+    const resolvedPath = path.resolve(assetBaseDir, assetRef.trim())
+    if (!isPathInsideBase(assetBaseDir, resolvedPath)) {
+      throw new Error(`Asset path must stay within ${assetBaseDir}`)
+    }
+
+    const ext = path.extname(resolvedPath).toLowerCase()
+    if (!SUPPORTED_ASSET_EXTENSIONS.has(ext)) {
+      throw new Error(`Unsupported asset extension: ${ext || '(none)'}`)
+    }
+
+    return resolvedPath
+  }
 
   await ensureBuiltAssets(version)
 
@@ -228,58 +283,77 @@ const main = async () => {
   let errorPositions = []
   let structureAxis = null
   let structureOriginWorldPos = null
-  const applyPayloadToWorld = async (payload) => {
-    const Block = require('prismarine-block')(version)
-    const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
-    errorPositions = result.errorPositions
-    structureOriginWorldPos = result.originWorldPos
-    structureAxis = {
-      origin: result.originWorldPos,
-      length: result.axisLength
-    }
-    center = centerArg || new Vec3(
-      Math.floor(result.size.x / 2),
-      60 + Math.floor(result.size.y / 2),
-      Math.floor(result.size.z / 2)
-    )
-  }
+  let boundingBox = null
+  let currentInputPath = null
+  let currentFormat = null
 
-  if (format === 'schem' || format === 'schematic') {
-    // Schematic has a native paste() that resolves stateIds correctly
-    try {
-      const schem = await Schematic.read(buffer, version)
-      await schem.paste(world, DEFAULT_PASTE_ORIGIN)
-      structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
-      const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
+  async function loadStructureAtPath (resolvedInputPath) {
+    const buffer = await fs.readFile(resolvedInputPath)
+    const format = detectStructureFormat(resolvedInputPath)
+    world = new World(() => new Chunk())
+    center = null
+    errorPositions = []
+    structureAxis = null
+    structureOriginWorldPos = null
+
+    const applyPayloadToWorld = async (payload) => {
+      const Block = require('prismarine-block')(version)
+      const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
+      errorPositions = result.errorPositions
+      structureOriginWorldPos = result.originWorldPos
       structureAxis = {
-        origin: {
-          x: Number(schem.offset.x || 0),
-          y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
-          z: Number(schem.offset.z || 0)
-        },
-        length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
+        origin: result.originWorldPos,
+        length: result.axisLength
       }
       center = centerArg || new Vec3(
-        Math.floor(schem.size.x / 2),
-        60 + Math.floor(schem.size.y / 2),
-        Math.floor(schem.size.z / 2)
+        Math.floor(result.size.x / 2),
+        60 + Math.floor(result.size.y / 2),
+        Math.floor(result.size.z / 2)
       )
-    } catch (nativeSchemError) {
-      console.warn(`Warning: native schematic parser failed (${nativeSchemError.message || nativeSchemError}). Falling back to generic parser.`)
-      const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, inputPath)
+    }
+
+    if (format === 'schem' || format === 'schematic') {
+      // Schematic has a native paste() that resolves stateIds correctly
+      try {
+        const schem = await Schematic.read(buffer, version)
+        await schem.paste(world, DEFAULT_PASTE_ORIGIN)
+        structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
+        const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
+        structureAxis = {
+          origin: {
+            x: Number(schem.offset.x || 0),
+            y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
+            z: Number(schem.offset.z || 0)
+          },
+          length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
+        }
+        center = centerArg || new Vec3(
+          Math.floor(schem.size.x / 2),
+          60 + Math.floor(schem.size.y / 2),
+          Math.floor(schem.size.z / 2)
+        )
+      } catch (nativeSchemError) {
+        console.warn(`Warning: native schematic parser failed (${nativeSchemError.message || nativeSchemError}). Falling back to generic parser.`)
+        const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, resolvedInputPath)
+        await applyPayloadToWorld(payload)
+      }
+    } else {
+      const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, resolvedInputPath)
+      if (format === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
+        throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
+      }
       await applyPayloadToWorld(payload)
     }
-  } else {
-    const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, inputPath)
-    if (format === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
-      throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
-    }
-    await applyPayloadToWorld(payload)
+
+    boundingBox = showBoundingBox
+      ? makeBoundingBoxConfig(structureOriginWorldPos, boundingBoxOrigin, boundingBoxSize)
+      : null
+
+    currentInputPath = resolvedInputPath
+    currentFormat = format
   }
 
-  const boundingBox = showBoundingBox
-    ? makeBoundingBoxConfig(structureOriginWorldPos, boundingBoxOrigin, boundingBoxSize)
-    : null
+  await loadStructureAtPath(initialInputPath)
 
   const express = require('express')
   const compression = require('compression')
@@ -298,7 +372,28 @@ const main = async () => {
   app.use('/', express.static(PUBLIC_DIR))
   app.use('/generated', express.static(path.join(__dirname, 'generated')))
 
+  app.get('/api/assets', async (req, res) => {
+    try {
+      const assets = await listStructureAssets(assetBaseDir)
+      res.json({
+        baseDir: assetBaseDir,
+        currentAsset: currentInputPath ? toClientAssetPath(currentInputPath) : null,
+        format: currentFormat,
+        assets
+      })
+    } catch (error) {
+      res.status(500).json({ error: error.message || String(error) })
+    }
+  })
+
   const sockets = []
+  let assetSwitchQueue = Promise.resolve()
+
+  function queueAssetSwitch (task) {
+    const run = assetSwitchQueue.then(() => task())
+    assetSwitchQueue = run.catch(() => {})
+    return run
+  }
 
   async function sendChunks (targets, boundingBoxFilter = null) {
     const cx = Math.floor(center.x / 16)
@@ -314,15 +409,40 @@ const main = async () => {
     }
   }
 
-  io.on('connection', (socket) => {
-    socket.boundingBoxFilter = null
-    socket.emit('version', version)
-    sockets.push(socket)
-    sendChunks([socket])
+  async function emitWorldStateToSocket (socket, options = {}) {
+    if (!socket) return
+    const withVersion = options.withVersion !== false
+    const filter = socket.boundingBoxFilter || null
+
+    if (withVersion) socket.emit('version', version)
+    await sendChunks([socket], filter)
     socket.emit('position', { pos: center, addMesh: false })
-    socket.emit('errorBlocks', errorPositions)
+    socket.emit('errorBlocks', filterErrorPositionsForBoundingBox(errorPositions, filter))
     socket.emit('structureAxis', structureAxis)
     socket.emit('boundingBox', boundingBox)
+    socket.emit('assetInfo', {
+      asset: currentInputPath ? toClientAssetPath(currentInputPath) : null,
+      format: currentFormat
+    })
+  }
+
+  async function emitWorldStateToAllSockets ({ withVersion = false } = {}) {
+    if (withVersion) {
+      for (const socket of sockets) {
+        socket.emit('version', version)
+      }
+    }
+    for (const socket of sockets) {
+      await emitWorldStateToSocket(socket, { withVersion: false })
+    }
+  }
+
+  io.on('connection', (socket) => {
+    socket.boundingBoxFilter = null
+    sockets.push(socket)
+    emitWorldStateToSocket(socket, { withVersion: true }).catch((error) => {
+      console.error('Failed to emit initial world state:', error)
+    })
     socket.on('bboxFilter', async (filterState) => {
       const nextFilter = filterState && filterState.enabled ? {
         origin: filterState.origin,
@@ -334,6 +454,33 @@ const main = async () => {
       await sendChunks(sockets, nextFilter)
       socket.emit('errorBlocks', filterErrorPositionsForBoundingBox(errorPositions, nextFilter))
     })
+
+    socket.on('switchAsset', async (payload, ack) => {
+      const respond = (response) => {
+        if (typeof ack === 'function') ack(response)
+      }
+
+      try {
+        const requestedAsset = payload && typeof payload.asset === 'string'
+          ? payload.asset
+          : ''
+        const resolvedAssetPath = resolveAssetPath(requestedAsset)
+
+        await queueAssetSwitch(async () => {
+          await loadStructureAtPath(resolvedAssetPath)
+          await emitWorldStateToAllSockets({ withVersion: true })
+        })
+
+        respond({
+          ok: true,
+          asset: toClientAssetPath(currentInputPath),
+          format: currentFormat
+        })
+      } catch (error) {
+        respond({ ok: false, error: error.message || String(error) })
+      }
+    })
+
     socket.on('disconnect', () => {
       sockets.splice(sockets.indexOf(socket), 1)
     })
@@ -366,13 +513,14 @@ const main = async () => {
   }
 
   console.log(`Prismarine viewer web server running on *:${currentPort}`)
-  console.log(`Structure loaded: ${inputPath} (format: ${format})`)
+  console.log(`Structure loaded: ${currentInputPath} (format: ${currentFormat})`)
   console.log(`Structure size (x,y,z): ${structureAxis.length},${structureAxis.length},${structureAxis.length}`)
   if (boundingBox) {
     console.log(`Bounding box origin (relative): ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`)
     console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)
     console.log(`parse_mc_ids args: ${formatBoundingBoxArgsPreview(boundingBox)}`)
   }
+  console.log(`Asset base directory: ${assetBaseDir}`)
   console.log(`Open http://127.0.0.1:${currentPort}`)
 }
 

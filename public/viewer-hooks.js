@@ -12,6 +12,10 @@
   panel.innerHTML = [
     '<div class="panel-section">',
     '<div class="panel-title">Viewer</div>',
+    '<div class="asset-switch-row">',
+    '<select id="asset-select"></select>',
+    '<button id="btn-switch-asset">Switch</button>',
+    '</div>',
     '<button id="btn-export">\u2B07 Export</button>',
     '<select id="export-format">',
     '<option value="obj">OBJ</option>',
@@ -27,8 +31,8 @@
     '</div>',
     '<div class="panel-section" id="bbox-panel">',
     '<div class="panel-title">Auxiliary</div>',
-    '<label class="panel-checkbox"><input type="checkbox" id="axis-visible" checked> Show Axes</label>',
-    '<label class="panel-checkbox"><input type="checkbox" id="bbox-enabled" checked> Show bounding box</label>',
+    '<label class="panel-checkbox"><input type="checkbox" id="axis-visible"> Show Axes</label>',
+    '<label class="panel-checkbox"><input type="checkbox" id="bbox-enabled"> Show bounding box</label>',
     '<label class="panel-checkbox"><input type="checkbox" id="bbox-hide-outside"> Hide outside blocks</label>',
     '<div class="field-grid">',
     '<label>Origin X<input id="bbox-origin-x" type="number" step="1"></label>',
@@ -52,6 +56,106 @@
     clearTimeout(statusTimer)
     document.getElementById('export-status').textContent = message
     if (message) statusTimer = setTimeout(function () { setStatus('') }, 4000)
+  }
+
+  var currentAssetPath = null
+  var availableAssets = []
+  var assetSwitchBusy = false
+
+  function setAssetSwitchBusy (busy) {
+    assetSwitchBusy = !!busy
+    var select = document.getElementById('asset-select')
+    var button = document.getElementById('btn-switch-asset')
+    if (select) select.disabled = assetSwitchBusy
+    if (button) button.disabled = assetSwitchBusy
+  }
+
+  function renderAssetSelectOptions () {
+    var select = document.getElementById('asset-select')
+    if (!select) return
+
+    var assets = Array.isArray(availableAssets) ? availableAssets.slice() : []
+    if (currentAssetPath && assets.indexOf(currentAssetPath) === -1) {
+      assets.push(currentAssetPath)
+      assets.sort()
+    }
+
+    select.innerHTML = ''
+    if (!assets.length) {
+      var emptyOption = document.createElement('option')
+      emptyOption.value = ''
+      emptyOption.textContent = '(no assets found)'
+      select.appendChild(emptyOption)
+      select.disabled = true
+      return
+    }
+
+    for (var i = 0; i < assets.length; i++) {
+      var option = document.createElement('option')
+      option.value = assets[i]
+      option.textContent = assets[i]
+      select.appendChild(option)
+    }
+
+    if (currentAssetPath) {
+      select.value = currentAssetPath
+    }
+    select.disabled = assetSwitchBusy
+  }
+
+  function refreshAssetList () {
+    return fetch('/api/assets')
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+        return res.json()
+      })
+      .then(function (payload) {
+        availableAssets = Array.isArray(payload.assets) ? payload.assets : []
+        currentAssetPath = payload.currentAsset || currentAssetPath
+        renderAssetSelectOptions()
+      })
+  }
+
+  function bindAssetSwitchControls () {
+    var select = document.getElementById('asset-select')
+    var button = document.getElementById('btn-switch-asset')
+    if (!select || !button) return
+
+    button.addEventListener('click', function () {
+      if (assetSwitchBusy) return
+      if (!socket) {
+        setStatus('Socket not ready yet.')
+        return
+      }
+
+      var nextAsset = select.value
+      if (!nextAsset) {
+        setStatus('No asset selected.')
+        return
+      }
+      if (currentAssetPath && nextAsset === currentAssetPath) {
+        setStatus('Already viewing this asset.')
+        return
+      }
+
+      setAssetSwitchBusy(true)
+      setStatus('Switching asset...')
+      socket.emit('switchAsset', { asset: nextAsset }, function (response) {
+        setAssetSwitchBusy(false)
+        if (!response || response.ok !== true) {
+          setStatus('Switch failed: ' + ((response && response.error) || 'unknown error'))
+          return
+        }
+        currentAssetPath = response.asset || nextAsset
+        renderAssetSelectOptions()
+        setStatus('Switched to: ' + currentAssetPath)
+        refreshAssetList().catch(function () {})
+      })
+    })
+
+    refreshAssetList().catch(function (error) {
+      setStatus('Failed to load asset list: ' + error.message)
+    })
   }
 
   function downloadBlob (blob, filename) {
@@ -667,8 +771,15 @@
       pendingBoundingBox = nextConfig
       if (window._pw_scene) renderBoundingBox(window._pw_scene, nextConfig)
     })
+
+    socket.on('assetInfo', function (info) {
+      if (!info || !info.asset) return
+      currentAssetPath = info.asset
+      renderAssetSelectOptions()
+    })
   }
 
+  bindAssetSwitchControls()
   bindAxisToggle()
   bindExportButtons()
   bindBoundingBoxControls()
