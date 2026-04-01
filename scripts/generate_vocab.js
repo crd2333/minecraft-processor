@@ -2,7 +2,7 @@
 
 const fs = require('fs').promises
 const path = require('path')
-const { buildVersionedBlockVocabulary } = require('../utils/blockVocabulary')
+const { buildVersionedBlockVocabulary } = require('../src/block_vocab')
 
 process.stdout.on('error', (err) => {
   if (err?.code === 'EPIPE') process.exit(0)
@@ -20,7 +20,7 @@ function showUsage () {
     '  -h, --help     Show this help',
     '',
     'Default output:',
-    '  generated/block-vocab.<mc-version>.json',
+    '  data/generated/block-vocab.<mc-version>.json',
     '',
     'Output shape:',
     '  { format, source, mcVersion, unknownToken, unknownIndex, classification, ranges, size, names, entityNames, nonEntityNames, nameToIndex, flagsByName }'
@@ -58,7 +58,7 @@ function parseArgs (argv) {
 
 function resolveOutputPath (version, outputPathArg) {
   if (outputPathArg) return path.resolve(process.cwd(), outputPathArg)
-  return path.resolve(process.cwd(), 'generated', `block-vocab.${version}.json`)
+  return path.resolve(process.cwd(), 'data', 'generated', `block-vocab.${version}.json`)
 }
 
 async function main () {

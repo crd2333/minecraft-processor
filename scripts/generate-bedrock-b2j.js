@@ -5,7 +5,7 @@ const path = require('path')
 
 // blocksJ2B.json from https://github.com/JaylyDev/nbt-to-mcstructure/blob/7f05710c2adf7afb7d2359a8ec9de9af96a7a632/nbt-to-mcstructure/blocksJ2B.json
 const SOURCE_PATH = path.resolve(__dirname, '../blocksJ2B.json')
-const OUTPUT_MAP_PATH = path.resolve(__dirname, '../generated/blocksB2J.json')
+const OUTPUT_MAP_PATH = path.resolve(__dirname, '../data/generated/blocksB2J.json')
 
 function candidateScore (javaState) {
   let score = 0

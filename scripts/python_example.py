@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STRUCTURE_PATH = ROOT / "assets" / "bedrock.mcstructure"
-VOCAB_PATH = ROOT / "generated" / "block-vocab.1.21.4.json"
+VOCAB_PATH = ROOT / "data" / "generated" / "block-vocab.1.21.4.json"
 
 
 def run_node_json(command):

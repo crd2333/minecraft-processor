@@ -14,9 +14,9 @@ npm install
 ## Usage
 `parse_mc.js` parses structure block files into normalized JSON (`{ meta, palette, blocks }`).
 
-`scripts/generate_vocab.js` is used to pre-generate a fixed Java block vocabulary for a target version under `generated/`. It reserves index `0` for unknown blocks, assigns entity blocks to one continuous index range, and assigns non-entity blocks to a second continuous range.
+`scripts/generate_vocab.js` is used to pre-generate a fixed Java block vocabulary for a target version under `data/generated/`. It reserves index `0` for unknown blocks, assigns entity blocks to one continuous index range, and assigns non-entity blocks to a second continuous range.
 
-`parse_mc_ids.js` is used to export a minimal ML-oriented payload. It reuses the shared structure parser, converts Bedrock block names to Java names when needed, and outputs `blocks: [[x, y, z, index], ...]` by looking up a pre-generated vocabulary file from `generated/`. If you only want entity blocks, pass `--entity-only` and non-entity blocks will be ignored during export.
+`parse_mc_ids.js` is used to export a minimal ML-oriented payload. It reuses the shared structure parser, converts Bedrock block names to Java names when needed, and outputs `blocks: [[x, y, z, index], ...]` by looking up a pre-generated vocabulary file from `data/generated/`. If you only want entity blocks, pass `--entity-only` and non-entity blocks will be ignored during export.
 
 The current entity/non-entity split is based on `minecraft-data` metadata: a block is treated as an entity block when `boundingBox !== 'empty'`.
 
@@ -35,31 +35,31 @@ npm run generate:vocab -- 1.21.4
 node parse_mc.js assets/xxx.schem --pretty
 
 # ID-only ML payload
-node parse_mc_ids.js assets/xxx.mcstructure generated/block-vocab.1.21.4.json --entity-only --stdout --pretty
+node parse_mc_ids.js assets/xxx.mcstructure data/generated/block-vocab.1.21.4.json --entity-only --stdout --pretty
 
 # Viewer
 node serve_mc.js assets/xxx.schem --version 1.21.4 --port 3000
 ```
 
-A minimal Python subprocess example is available at `scripts/python_example.py`. It reads the pre-generated vocabulary from `generated/block-vocab.1.20.1.json` and only calls `parse_mc_ids.js` at runtime.
+A minimal Python subprocess example is available at `scripts/python_example.py`. It reads the pre-generated vocabulary from `data/generated/block-vocab.1.20.1.json` and only calls `parse_mc_ids.js` at runtime.
 
 ## Code Layout
 `parse_mc.js`, `serve_mc.js`, `parse_mc_ids.js` are the only root entrypoints.
 
-Shared structure parsing logic now lives under `utils/structure.js`: shared format detection, NBT probing, coordinate helpers, and the unified structure-to-payload loader used by both parse and serve flows.
+Shared structure parsing logic now lives under `src/structure_parser.js`: shared format detection, NBT probing, coordinate helpers, and the unified structure-to-payload loader used by both parse and serve flows.
 
-Rendering-specific world population logic lives under `utils/worldBuilder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed.
+Rendering-specific world population logic lives under `src/world_builder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed.
 
-The browser page is no longer embedded in `serve_mc.js`. Static viewer assets now live in `public/viewer.html`, `public/viewer-preload.js`, and `public/viewer-hooks.js`.
+The browser page is no longer embedded in `serve_mc.js`. Frontend source files now live under `apps/frontend/viewer/` (`public/viewer.html`, `src/preload/viewer-preload.js`, `src/hooks/viewer-hooks.js`), while webpack outputs runtime bundles to `static/`.
 
-Vendored Prismarine viewer code remains isolated under `vendor/prismarine-viewer/`.
+Vendored Prismarine viewer code remains isolated under `prismarine-viewer-lib/`.
 
 ## Packages Fix/Modification
 1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
 2. Added depth map and segmentation map rendering support (modifications to vendored PrismarineJS viewer):
-   - `vendor/prismarine-viewer/lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
-   - `vendor/prismarine-viewer/lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
-   - `vendor/prismarine-viewer/lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
+   - `prismarine-viewer-lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
+   - `prismarine-viewer-lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
+   - `prismarine-viewer-lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
 
 ## Depth Map & Segmentation Map
 
@@ -67,7 +67,7 @@ The viewer can capture three special render passes from the current camera view:
 
 - **Depth Map** (`depth_map.png`): Linear grayscale depth. `d = (viewDepth - near) / (far - near)`, black = near, white = far.
 - **Segmentation ID Map** (`segmentation_id.png`): Each pixel's RGB encodes the block `stateId` as `R*65536 + G*256 + B`. Background/air is black `(0,0,0)`. This provides a unique mapping per block state.
-- **Segmentation Color Map** (`segmentation_color.png`): Each pixel uses a human-readable color from `generated/mc_mappings.json` based on block type. Multiple block types may share the same color.
+- **Segmentation Color Map** (`segmentation_color.png`): Each pixel uses a human-readable color from `data/generated/mc_mappings.json` (served at `/generated/mc_mappings.json`) based on block type. Multiple block types may share the same color.
 
 **Capture All + Meta** downloads all three images plus a `capture_metadata.json` containing:
 - Camera near/far planes for depth reconstruction

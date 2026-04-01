@@ -44,31 +44,32 @@
          │
          ▼
 [统一解析层]
-  utils/structure.js
+   src/structure_parser.js
   - 格式识别
   - NBT 自动探测
   - 多格式归一化解析
   - 统一 meta/palette/blocks
          │
          ├────────► [词表映射层]
-         │          utils/blockVocabulary.js
+         │          src/block_vocab.js
          │          (vocab 生成/校验/index 解析)
          │
          └────────► [世界构建层]
-                    utils/worldBuilder.js
-                    + utils/bedrockToJava.js
+                    src/world_builder.js
+                    + src/bedrock-adapter/convertBlocks.js
+                    + src/bedrock-adapter/postProcess.js
                     (渲染侧 block 归一化与 Bedrock 后处理)
                                │
                                ▼
                      [Viewer 前后端]
-                     serve_mc.js + src/client.js + public/*
+                               serve_mc.js + apps/frontend/viewer/* + static/*
 ```
 
 ---
 
 ## 4. 关键模块说明
 
-## 4.1 `utils/structure.js`（核心中的核心）
+## 4.1 `src/structure_parser.js`（核心中的核心）
 
 主要职责：
 
@@ -91,7 +92,7 @@
 
 ---
 
-## 4.2 `parse_mc_ids.js` + `utils/blockVocabulary.js`
+## 4.2 `parse_mc_ids.js` + `src/block_vocab.js`
 
 数据流：
 
@@ -109,7 +110,7 @@
 
 ---
 
-## 4.3 `utils/worldBuilder.js` + `utils/bedrockToJava.js`
+## 4.3 `src/world_builder.js` + `src/bedrock-adapter/*`
 
 `worldBuilder.js`：
 
@@ -117,30 +118,31 @@
 - 汇总放置失败 block（用于 viewer 中 error block 可视化）
 - 对 Bedrock 结构触发后处理
 
-`bedrockToJava.js`：
+`bedrock-adapter/index.js`：
 
-- 使用 `generated/blocksB2J.json` 做 Bedrock→Java 映射
+- 使用 `data/generated/blocksB2J.json` 做 Bedrock→Java 映射
 - 执行多轮上下文后处理（如 stairs shape、chest type、redstone/fence/pane 连接等）
 
 该模块是“Bedrock 结构渲染正确性”的关键。
 
 ---
 
-## 4.4 Viewer：`serve_mc.js` + `src/client.js` + `public/*`
+## 4.4 Viewer：`serve_mc.js` + `apps/frontend/viewer/*` + `static/*`
 
 ### 服务端（`serve_mc.js`）
 
-- Express 提供页面与静态资源
+- Express 提供页面与静态资源（`apps/frontend/viewer/public` + `static`）
 - Socket.IO 推送 world chunks、position、辅助几何信息
 - 支持资产枚举/切换（`/api/assets` + `switchAsset`）
 - 支持 bounding box 显示与过滤
+- 通过 `/generated` 路由暴露 `data/generated`
 
-### 客户端渲染（`src/client.js`）
+### 客户端渲染（`apps/frontend/viewer/src/client.js`）
 
 - 基于 Three.js + vendored prismarine world renderer
 - 暴露若干 `window.__capture*` API
 
-### 交互面板（`public/viewer-hooks.js`）
+### 交互面板（`apps/frontend/viewer/src/hooks/viewer-hooks.js`）
 
 - 导出 OBJ/STL/GLB
 - 截图
@@ -153,8 +155,8 @@
 
 `package.json` 中关键脚本：
 
-- `npm run build:assets`：生成 `public/textures/*` 与 `public/blocksStates/*`
-- `npm run build:client`：webpack 打包浏览器端入口和 worker 到 `public/`
+- `npm run build:assets`：生成 `static/textures/*` 与 `static/blocksStates/*`
+- `npm run build:client`：webpack 打包浏览器端入口和 worker 到 `static/`
 - `npm run build`：组合上述两步
 - `npm run prepare`：安装依赖后自动触发 build
 
@@ -180,26 +182,27 @@
 
 ## 7. 目录职责速查
 
-- `utils/`：解析、转换、词表、世界构建核心逻辑
+- `apps/cli/`：CLI 入口实现（根目录入口仅保留兼容转发）
+- `apps/frontend/viewer/`：前端页面与运行时代码
+- `src/`：共享领域逻辑（解析、词表、Bedrock 适配、世界构建）
 - `scripts/`：离线生成器与辅助工具（vocab、assets、mapping、python demo）
-- `src/`：浏览器端主渲染入口
-- `public/`：viewer 页面、hooks、打包产物、纹理等静态资源
-- `generated/`：预生成 vocab/mapping 等运行依赖
-- `vendor/prismarine-viewer/`：项目内置且已修改的 viewer 依赖
+- `static/`：浏览器静态产物（bundle、纹理、blockStates）
+- `data/generated/`：预生成 vocab/mapping 等运行依赖
+- `prismarine-viewer-lib/`：项目内置且已修改的 viewer 依赖
 
 ---
 
 ## 8. Agent 快速上手建议
 
-1. 先读：`README.md`、`utils/structure.js`、`serve_mc.js`
+1. 先读：`README.md`、`src/structure_parser.js`、`apps/cli/serve-mc/index.js`
 2. 再看任务方向：
-   - 解析语义问题 → `utils/structure.js`
-   - 词表/索引问题 → `utils/blockVocabulary.js` + `parse_mc_ids.js`
-   - Bedrock 映射问题 → `utils/bedrockToJava.js`
-   - Viewer 交互导出问题 → `public/viewer-hooks.js` + `src/client.js`
+   - 解析语义问题 → `src/structure_parser.js`
+   - 词表/索引问题 → `src/block_vocab.js` + `parse_mc_ids.js`
+   - Bedrock 映射问题 → `src/bedrock-adapter/convertBlocks.js` 与 `src/bedrock-adapter/postProcess.js`
+   - Viewer 交互导出问题 → `apps/frontend/viewer/src/hooks/viewer-hooks.js` + `apps/frontend/viewer/src/client.js`
 3. 运行最小验证：
    - `node parse_mc.js assets/<file> --pretty --stdout`
-   - `node parse_mc_ids.js assets/<file> generated/block-vocab.<ver>.json --stdout --pretty`
+   - `node parse_mc_ids.js assets/<file> data/generated/block-vocab.<ver>.json --stdout --pretty`
    - `node serve_mc.js assets/<file> --version <ver>`
 
 ---
@@ -207,5 +210,5 @@
 ## 9. 风险与维护注意
 
 - 仓库包含 `node_modules/`，检索时需有意识避开
-- `vendor/prismarine-viewer/` 为本地修改版本，升级依赖时要做差异评估
-- `generated/` 目录中的产物通常是运行时依赖，变更脚本后应同步再生成并验证
+- `prismarine-viewer-lib/` 为本地修改版本，升级依赖时要做差异评估
+- `data/generated/` 目录中的产物通常是运行时依赖，变更脚本后应同步再生成并验证

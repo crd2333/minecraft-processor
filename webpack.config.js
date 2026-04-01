@@ -37,17 +37,17 @@ const commonConfig = {
 module.exports = [
   {
     ...commonConfig,
-    entry: './src/client.js',
+    entry: './apps/frontend/viewer/src/client.js',
     output: {
-      path: path.resolve(__dirname, './public'),
+      path: path.resolve(__dirname, './static'),
       filename: './index.js'
     }
   },
   {
     ...commonConfig,
-    entry: './vendor/prismarine-viewer/lib/worker.js',
+    entry: './prismarine-viewer-lib/worker.js',
     output: {
-      path: path.resolve(__dirname, './public'),
+      path: path.resolve(__dirname, './static'),
       filename: './worker.js'
     },
     externals: [minecraftDataFilter]

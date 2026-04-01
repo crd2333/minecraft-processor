@@ -2,8 +2,7 @@
 model.*
 assets/
 node_modules/
-public/*
-!public/viewer-hooks.js
-!public/viewer-preload.js
-!public/viewer.html
+static/blockStates/
+static/textures/
 package-lock.json
+
