@@ -5,7 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STRUCTURE_PATH = ROOT / "assets" / "bedrock.mcstructure"
-VOCAB_PATH = ROOT / "data" / "generated" / "block-vocab.1.21.4.json"
 
 
 def run_node_json(command):
@@ -20,21 +19,21 @@ def run_node_json(command):
 
 
 def main():
-    vocabulary = json.loads(VOCAB_PATH.read_text(encoding="utf-8"))
+    parsed = run_node_json(
+        [
+            "node",
+            "parse_mc_unified.js",
+            str(STRUCTURE_PATH),
+            "--target-version",
+            "1.21.4",
+            "--stdout",
+            "--pretty",
+        ]
+    )
 
-    parsed = run_node_json([
-        "node",
-        "parse_mc_ids.js",
-        str(STRUCTURE_PATH),
-        str(VOCAB_PATH),
-        "--entity-only",
-        "--stdout",
-        "--pretty",
-    ])
-
-    print("vocab_entity_range", vocabulary["ranges"]["entity"])
-    print("block_count", parsed["meta"]["outputBlockCount"])
-    print("unknown_block_count", parsed["meta"]["unknownBlockCount"])
+    print("target", parsed["meta"]["target"])
+    print("block_count", parsed["meta"]["stats"]["blockCount"])
+    print("unresolved_block_count", parsed["meta"]["stats"]["unresolvedBlockCount"])
     print("first_blocks", parsed["blocks"][:5])
 
 

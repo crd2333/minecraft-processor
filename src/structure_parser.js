@@ -5,7 +5,9 @@ const spongeSchematic = require('prismarine-schematic/lib/spongeSchematic')
 const mceditSchematic = require('prismarine-schematic/lib/mceditSchematic')
 const { parseBlockName, getStateId } = require('prismarine-schematic/lib/states')
 const { Vec3 } = require('vec3')
+const minecraftData = require('minecraft-data')
 const versions = require('minecraft-data').versions.pc
+const { convertBedrockBlock } = require('./bedrock-adapter/convertBlocks')
 
 function detectStructureFormat (inputPath) {
   const ext = path.extname(inputPath).toLowerCase()
@@ -268,18 +270,78 @@ function stableStringify (value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
 
   const keys = Object.keys(value).sort()
-  const body = keys.map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')
-  return `{${body}}`
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
 }
 
-function createPaletteKey (entry) {
-  return [
-    entry.namespaceName || '',
-    entry.stateId ?? 'null',
-    entry.blockId ?? 'null',
-    entry.metadata ?? 'null',
-    stableStringify(entry.properties || {})
-  ].join('|')
+function isJavaStructureNbt (simplified) {
+  return Boolean(
+    simplified &&
+    Array.isArray(simplified.size) &&
+    simplified.size.length === 3 &&
+    Array.isArray(simplified.palette) &&
+    Array.isArray(simplified.blocks)
+  )
+}
+
+function isBedrockMcstructureData (simplified) {
+  return Boolean(
+    simplified &&
+    Array.isArray(simplified.size) &&
+    simplified.size.length === 3 &&
+    Array.isArray(simplified?.structure?.palette?.default?.block_palette) &&
+    Array.isArray(simplified?.structure?.block_indices)
+  )
+}
+
+function isLitematicData (simplified) {
+  if (!simplified || typeof simplified !== 'object' || Array.isArray(simplified)) return false
+  if (!simplified.Regions || typeof simplified.Regions !== 'object' || Array.isArray(simplified.Regions)) return false
+  return Object.keys(simplified.Regions).length > 0
+}
+
+function normalizeScalarPropValue (value) {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return stableStringify(value)
+}
+
+function normalizePropsObject (props) {
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return {}
+
+  const normalized = {}
+  for (const [key, value] of Object.entries(props)) {
+    normalized[key] = normalizeScalarPropValue(value)
+  }
+  return normalized
+}
+
+function ensureNamespacedName (name) {
+  if (!name) return null
+  return name.includes(':') ? name : `minecraft:${name}`
+}
+
+function resolveJavaDataVersion (version) {
+  if (!version) return null
+
+  try {
+    return minecraftData(version)?.version?.dataVersion ?? null
+  } catch (_) {
+    return null
+  }
+}
+
+function resolveTargetDataVersion ({ sourceEdition, sourceDataVersion, targetVersion }) {
+  if (sourceEdition === 'java' && sourceDataVersion !== null && sourceDataVersion !== undefined) return sourceDataVersion
+  return resolveJavaDataVersion(targetVersion)
+}
+
+function entriesEqual (left, right) {
+  return stableStringify(left) === stableStringify(right)
+}
+
+function paletteKey (entry) {
+  return stableStringify(entry)
 }
 
 function createPaletteAccumulator () {
@@ -289,391 +351,244 @@ function createPaletteAccumulator () {
   }
 }
 
-function upsertPalette (acc, blockDescriptor) {
-  const key = createPaletteKey(blockDescriptor)
+function upsertPaletteEntry (acc, entry) {
+  const key = paletteKey(entry)
   const existing = acc.keyToIndex.get(key)
   if (existing !== undefined) return existing
 
-  const paletteIndex = acc.entries.length
-  acc.entries.push({
-    paletteIndex,
-    blockName: blockDescriptor.blockName || null,
-    namespaceName: blockDescriptor.namespaceName || null,
-    displayName: blockDescriptor.displayName || null,
-    stateId: blockDescriptor.stateId ?? null,
-    blockId: blockDescriptor.blockId ?? null,
-    metadata: blockDescriptor.metadata ?? null,
-    properties: blockDescriptor.properties || {},
-    usageCount: 0,
-    sourceHints: blockDescriptor.sourceHints || {}
-  })
-  acc.keyToIndex.set(key, paletteIndex)
-  return paletteIndex
+  const pid = acc.entries.length
+  acc.entries.push(entry)
+  acc.keyToIndex.set(key, pid)
+  return pid
 }
 
-function addBlockRecord ({
-  blocks,
-  paletteAcc,
-  position,
-  structureOrigin,
-  blockName,
-  namespaceName,
-  displayName,
-  stateId,
-  blockId,
-  metadata,
-  properties,
-  blockEntityData,
-  source,
-  sourcePaletteIndex,
-  regionOrigin
-}) {
-  const paletteIndex = upsertPalette(paletteAcc, {
-    blockName,
-    namespaceName,
-    displayName,
-    stateId,
-    blockId,
-    metadata,
-    properties,
-    sourceHints: {
-      format: source?.format || null,
-      sourcePaletteIndex: sourcePaletteIndex ?? null
-    }
-  })
-
-  paletteAcc.entries[paletteIndex].usageCount++
-
-  const relStructure = relativePosition(position, structureOrigin)
-  const relRegion = regionOrigin ? relativePosition(position, regionOrigin) : null
-
-  blocks.push({
-    position,
-    relativePosition: relStructure,
-    relativePositionByScope: {
-      structure: relStructure,
-      region: relRegion
-    },
-    paletteIndex,
-    stateId: stateId ?? null,
-    blockName: blockName || null,
-    namespaceName: namespaceName || null,
-    displayName: displayName || null,
-    blockId: blockId ?? null,
-    metadata: metadata ?? null,
-    properties: properties || {},
-    blockEntityData: blockEntityData || null,
-    isAir: isAirName(blockName),
-    source: {
-      ...(source || {}),
-      native: {
-        ...(source?.native || {}),
-        sourcePaletteIndex: sourcePaletteIndex ?? null
-      }
-    }
-  })
+function createEmptyStats () {
+  return {
+    paletteSize: 0,
+    blockCount: 0,
+    entityCount: 0,
+    unresolvedPaletteCount: 0,
+    unresolvedBlockCount: 0,
+    droppedBlockCount: 0
+  }
 }
 
-function getMcstructurePositionData (blockPositionData, absoluteIndex) {
-  if (!blockPositionData || typeof blockPositionData !== 'object') return null
-  return blockPositionData[String(absoluteIndex)] || null
+function finalizeStats (stats, palette, blocks, entities) {
+  stats.paletteSize = palette.length
+  stats.blockCount = blocks.length
+  stats.entityCount = entities.length
+  stats.unresolvedPaletteCount = palette.filter((entry) => entry.mapping?.status === 'unresolved').length
+  return stats
 }
 
-function defaultSchemaFields () {
-  return [
-    'position',
-    'relativePosition',
-    'relativePositionByScope',
-    'paletteIndex',
-    'stateId',
-    'blockName',
-    'namespaceName',
-    'displayName',
-    'blockId',
-    'metadata',
-    'properties',
-    'blockEntityData',
-    'isAir',
-    'source'
-  ]
-}
-
-function buildMeta ({
-  sourceFile,
-  sourceFormat,
-  normalizedFormat,
-  parser,
-  parserVersionHint,
-  parsedMinecraftVersion,
-  nbtEndian,
-  includeAir,
-  size,
-  offset,
-  totalPositions,
-  outputBlockCount,
-  paletteCount,
-  extra
-}) {
-  const meta = {
-    sourceFile,
-    sourceFormat,
-    normalizedFormat,
-    parsedAt: new Date().toISOString(),
-    parser,
-    parserVersionHint: parserVersionHint || null,
-    parsedMinecraftVersion: parsedMinecraftVersion ?? null,
-    nbtEndian: nbtEndian || null,
-    includeAir,
-    size: size || null,
-    offset: offset || null,
-    totalPositions: totalPositions ?? null,
-    outputBlockCount,
-    paletteCount,
-    schema: { blockFields: defaultSchemaFields() }
+function applyUnknownPolicy (entry, unknownPolicy) {
+  if (entry.mapping?.status === 'unresolved' && unknownPolicy === 'drop') {
+    return { action: 'drop' }
   }
 
-  if (extra) meta.extra = extra
-  return meta
+  return { action: 'keep', entry }
 }
 
-async function parseSchematicLike (buffer, options, sourcePath, sourceFormat) {
-  const schematic = await readSchematicWithFallback(buffer, options.version)
-  const blocks = []
+function createUnifiedBuilder ({ sourceFormat, sourceEdition, sourceVersion, parser, sourceDataVersion, targetVersion, unknownPolicy }) {
   const paletteAcc = createPaletteAccumulator()
+  const blocks = []
+  const entities = []
+  const stats = createEmptyStats()
 
-  const offset = normalizePosition(schematic.offset.x, schematic.offset.y, schematic.offset.z)
-  const size = normalizePosition(schematic.size.x, schematic.size.y, schematic.size.z)
+  function addCanonicalBlock ({ x, y, z, canonical }) {
+    const result = applyUnknownPolicy(canonical, unknownPolicy)
+    if (result.action === 'drop') {
+      stats.droppedBlockCount++
+      return
+    }
+
+    const pid = upsertPaletteEntry(paletteAcc, result.entry)
+    blocks.push([x, y, z, pid])
+
+    if (result.entry.mapping?.status === 'unresolved') stats.unresolvedBlockCount++
+  }
+
+  function finalize (size) {
+    return {
+      meta: {
+        DataVersion: resolveTargetDataVersion({ sourceEdition, sourceDataVersion, targetVersion }),
+        source: {
+          format: sourceFormat,
+          edition: sourceEdition,
+          version: sourceVersion ?? null,
+          parser
+        },
+        target: {
+          edition: 'java',
+          version: targetVersion || null
+        },
+        coordinateSpace: 'relative',
+        unknownPolicy,
+        stats: finalizeStats(stats, paletteAcc.entries, blocks, entities)
+      },
+      size,
+      palette: paletteAcc.entries,
+      blocks,
+      entities
+    }
+  }
+
+  return { addCanonicalBlock, finalize }
+}
+
+function canonicalFromJavaBlock ({ name, props }) {
+  return {
+    name: ensureNamespacedName(name),
+    props: normalizePropsObject(props)
+  }
+}
+
+function canonicalFromBedrockBlock ({ name, props, sourceVersion }) {
+  const sourceName = ensureNamespacedName(name)
+  const converted = convertBedrockBlock(stripMinecraftNamespace(sourceName || ''), props || {}, {
+    sourceVersion: sourceVersion || null
+  })
+
+  const canonicalName = ensureNamespacedName(converted.name || sourceName)
+  const canonicalProps = normalizePropsObject(converted.properties || {})
+
+  let status = 'unresolved'
+  if (converted.matched) {
+    status = entriesEqual(
+      { name: canonicalName, props: canonicalProps },
+      { name: sourceName, props: normalizePropsObject(props) }
+    )
+      ? 'preserved'
+      : 'mapped'
+  }
+
+  return {
+    name: canonicalName,
+    props: canonicalProps,
+    mapping: {
+      status,
+      sourceKey: converted.sourceKey
+    }
+  }
+}
+
+async function parseUnifiedSchematicLike (buffer, format, options) {
+  const schematic = await readSchematicWithFallback(buffer, options.version)
+  const size = [Number(schematic.size.x) || 0, Number(schematic.size.y) || 0, Number(schematic.size.z) || 0]
+  const builder = createUnifiedBuilder({
+    sourceFormat: format,
+    sourceEdition: 'java',
+    sourceVersion: schematic.version || options.version || null,
+    parser: 'prismarine-schematic',
+    sourceDataVersion: null,
+    targetVersion: options.targetVersion || options.version || null,
+    unknownPolicy: options.unknownPolicy || 'keep'
+  })
 
   await schematic.forEach(async (block, pos) => {
-    const air = isAirName(block.name)
-    if (air && !options.includeAir) return
+    if (isAirName(block.name)) return
 
-    const position = normalizePosition(pos.x, pos.y, pos.z)
-    const stateId = schematic.getBlockStateId(pos)
     const properties = typeof block.getProperties === 'function' ? block.getProperties() : {}
-    const namespaceName = block.name && block.name.includes(':') ? block.name : (block.name ? `minecraft:${block.name}` : null)
-
-    addBlockRecord({
-      blocks,
-      paletteAcc,
-      position,
-      structureOrigin: offset,
-      blockName: block.name || null,
-      namespaceName,
-      displayName: block.displayName || null,
-      stateId,
-      blockId: block.type ?? null,
-      metadata: block.metadata ?? null,
-      properties,
-      blockEntityData: null,
-      source: {
-        format: sourceFormat === 'schematic' ? 'mcedit-or-sponge-schematic' : 'sponge-schematic',
-        native: {
-          biome: block.biome?.name || null,
-          hardness: block.hardness ?? null,
-          diggable: block.diggable ?? null,
-          transparent: block.transparent ?? null,
-          emitLight: block.emitLight ?? null,
-          filterLight: block.filterLight ?? null,
-          boundingBox: block.boundingBox || null
-        }
-      },
-      sourcePaletteIndex: schematic.palette.indexOf(stateId),
-      regionOrigin: null
+    builder.addCanonicalBlock({
+      x: Number(pos.x) || 0,
+      y: Number(pos.y) || 0,
+      z: Number(pos.z) || 0,
+      canonical: canonicalFromJavaBlock({
+        name: block.name,
+        props: properties
+      })
     })
   })
 
-  return {
-    meta: buildMeta({
-      sourceFile: sourcePath,
-      sourceFormat,
-      normalizedFormat: 'schematic-like',
-      parser: 'prismarine-schematic',
-      parserVersionHint: options.version,
-      parsedMinecraftVersion: schematic.version,
-      nbtEndian: null,
-      includeAir: options.includeAir,
-      size,
-      offset,
-      totalPositions: size.x * size.y * size.z,
-      outputBlockCount: blocks.length,
-      paletteCount: paletteAcc.entries.length
-    }),
-    palette: paletteAcc.entries,
-    blocks
-  }
+  return builder.finalize(size)
 }
 
-function parseJavaStructureNbt (simplified, options, sourcePath, nbtInfo, sourceFormat) {
-  const sizeArr = simplified.size
-  const palette = simplified.palette
-  const blockList = simplified.blocks
+function parseUnifiedJavaStructureNbt (simplified, format, options) {
+  if (!isJavaStructureNbt(simplified)) return null
 
-  if (!Array.isArray(sizeArr) || sizeArr.length !== 3 || !Array.isArray(palette) || !Array.isArray(blockList)) {
-    return null
-  }
+  const size = [Number(simplified.size[0]) || 0, Number(simplified.size[1]) || 0, Number(simplified.size[2]) || 0]
+  const builder = createUnifiedBuilder({
+    sourceFormat: format,
+    sourceEdition: 'java',
+    sourceVersion: simplified.DataVersion ?? null,
+    parser: 'prismarine-nbt',
+    sourceDataVersion: simplified.DataVersion ?? null,
+    targetVersion: options.targetVersion || null,
+    unknownPolicy: options.unknownPolicy || 'keep'
+  })
 
-  const size = normalizePosition(sizeArr[0], sizeArr[1], sizeArr[2])
-  const offset = normalizePosition(0, 0, 0)
-  const blocks = []
-  const paletteAcc = createPaletteAccumulator()
-
-  for (const entry of blockList) {
+  for (const entry of simplified.blocks) {
     if (!entry || !Array.isArray(entry.pos) || entry.pos.length !== 3) continue
 
     const srcPaletteIndex = Number(entry.state)
-    if (Number.isNaN(srcPaletteIndex) || srcPaletteIndex < 0 || srcPaletteIndex >= palette.length) continue
+    if (Number.isNaN(srcPaletteIndex) || srcPaletteIndex < 0 || srcPaletteIndex >= simplified.palette.length) continue
 
-    const paletteEntry = palette[srcPaletteIndex] || {}
+    const paletteEntry = simplified.palette[srcPaletteIndex] || {}
     const blockName = paletteEntry.Name || paletteEntry.name || null
-    if (isAirName(blockName) && !options.includeAir) continue
+    if (isAirName(blockName)) continue
 
-    const position = normalizePosition(entry.pos[0], entry.pos[1], entry.pos[2])
-    const properties = paletteEntry.Properties || paletteEntry.properties || {}
-
-    addBlockRecord({
-      blocks,
-      paletteAcc,
-      position,
-      structureOrigin: offset,
-      blockName,
-      namespaceName: blockName,
-      displayName: null,
-      stateId: null,
-      blockId: null,
-      metadata: null,
-      properties,
-      blockEntityData: entry.nbt || null,
-      source: {
-        format: 'java-structure-nbt',
-        native: {
-          dataVersion: simplified.DataVersion ?? null
-        }
-      },
-      sourcePaletteIndex: srcPaletteIndex,
-      regionOrigin: null
+    builder.addCanonicalBlock({
+      x: Number(entry.pos[0]) || 0,
+      y: Number(entry.pos[1]) || 0,
+      z: Number(entry.pos[2]) || 0,
+      canonical: canonicalFromJavaBlock({
+        name: blockName,
+        props: paletteEntry.Properties || paletteEntry.properties || {}
+      })
     })
   }
 
-  return {
-    meta: buildMeta({
-      sourceFile: sourcePath,
-      sourceFormat,
-      normalizedFormat: 'nbt-java-structure',
-      parser: 'prismarine-nbt',
-      parserVersionHint: options.version,
-      parsedMinecraftVersion: simplified.DataVersion ?? null,
-      nbtEndian: nbtInfo.nbtEndian,
-      includeAir: options.includeAir,
-      size,
-      offset,
-      totalPositions: size.x * size.y * size.z,
-      outputBlockCount: blocks.length,
-      paletteCount: paletteAcc.entries.length,
-      extra: {
-        nbtParseHint: nbtInfo.nbtParseHint
-      }
-    }),
-    palette: paletteAcc.entries,
-    blocks
-  }
+  return builder.finalize(size)
 }
 
-function parseBedrockMcstructure (simplified, options, sourcePath, nbtInfo, sourceFormat) {
-  const sizeArr = simplified.size
-  const structure = simplified.structure
-  const palette = structure?.palette?.default?.block_palette
-  const blockIndicesLayers = structure?.block_indices
+function parseUnifiedMcstructure (simplified, format, options) {
+  if (!isBedrockMcstructureData(simplified)) return null
 
-  if (!Array.isArray(sizeArr) || sizeArr.length !== 3 || !Array.isArray(palette) || !Array.isArray(blockIndicesLayers)) {
-    return null
-  }
-
-  const primaryIndices = blockIndicesLayers[0]
+  const palette = simplified.structure.palette.default.block_palette
+  const primaryIndices = simplified.structure.block_indices[0]
   if (!Array.isArray(primaryIndices)) return null
 
-  const size = normalizePosition(sizeArr[0], sizeArr[1], sizeArr[2])
-  const originArr = simplified.structure_world_origin
-  const offset = Array.isArray(originArr) && originArr.length === 3
-    ? normalizePosition(originArr[0], originArr[1], originArr[2])
-    : normalizePosition(0, 0, 0)
-
-  const blocks = []
-  const paletteAcc = createPaletteAccumulator()
-  const blockPositionData = structure?.palette?.default?.block_position_data
+  const size = [Number(simplified.size[0]) || 0, Number(simplified.size[1]) || 0, Number(simplified.size[2]) || 0]
+  const dims = normalizePosition(size[0], size[1], size[2])
+  const builder = createUnifiedBuilder({
+    sourceFormat: format,
+    sourceEdition: 'bedrock',
+    sourceVersion: simplified.format_version ?? null,
+    parser: 'prismarine-nbt',
+    sourceDataVersion: null,
+    targetVersion: options.targetVersion || null,
+    unknownPolicy: options.unknownPolicy || 'keep'
+  })
 
   for (let i = 0; i < primaryIndices.length; i++) {
     const srcPaletteIndex = Number(primaryIndices[i])
     if (srcPaletteIndex < 0 || srcPaletteIndex >= palette.length) continue
 
-    const p = positionFromIndexZYX(i, size)
-    const position = normalizePosition(p.x + offset.x, p.y + offset.y, p.z + offset.z)
-
     const paletteEntry = palette[srcPaletteIndex] || {}
     const blockName = paletteEntry.name || null
-    if (isAirName(blockName) && !options.includeAir) continue
+    if (isAirName(blockName)) continue
 
-    addBlockRecord({
-      blocks,
-      paletteAcc,
-      position,
-      structureOrigin: offset,
-      blockName,
-      namespaceName: blockName,
-      displayName: null,
-      stateId: null,
-      blockId: null,
-      metadata: null,
-      properties: paletteEntry.states || {},
-      blockEntityData: getMcstructurePositionData(blockPositionData, i),
-      source: {
-        format: 'mcstructure-bedrock',
-        native: {
-          formatVersion: simplified.format_version ?? null,
-          paletteVersion: paletteEntry.version ?? null,
-          hasSecondaryLayer: Array.isArray(blockIndicesLayers[1])
-        }
-      },
-      sourcePaletteIndex: srcPaletteIndex,
-      regionOrigin: null
+    const pos = positionFromIndexZYX(i, dims)
+    builder.addCanonicalBlock({
+      x: pos.x,
+      y: pos.y,
+      z: pos.z,
+      canonical: canonicalFromBedrockBlock({
+        name: blockName,
+        props: paletteEntry.states || {},
+        sourceVersion: paletteEntry.version ?? null
+      })
     })
   }
 
-  return {
-    meta: buildMeta({
-      sourceFile: sourcePath,
-      sourceFormat,
-      normalizedFormat: 'mcstructure-bedrock',
-      parser: 'prismarine-nbt',
-      parserVersionHint: options.version,
-      parsedMinecraftVersion: null,
-      nbtEndian: nbtInfo.nbtEndian,
-      includeAir: options.includeAir,
-      size,
-      offset,
-      totalPositions: size.x * size.y * size.z,
-      outputBlockCount: blocks.length,
-      paletteCount: paletteAcc.entries.length,
-      extra: {
-        nbtParseHint: nbtInfo.nbtParseHint
-      }
-    }),
-    palette: paletteAcc.entries,
-    blocks
-  }
+  return builder.finalize(size)
 }
 
-function parseLitematic (simplified, options, sourcePath, nbtInfo, sourceFormat) {
-  const regions = simplified.Regions
-  if (!regions || typeof regions !== 'object' || Array.isArray(regions)) return null
+function parseUnifiedLitematic (simplified, format, options) {
+  if (!isLitematicData(simplified)) return null
 
-  const regionNames = Object.keys(regions)
-  if (regionNames.length === 0) return null
-
-  const blocks = []
-  const paletteAcc = createPaletteAccumulator()
-
-  let totalPositions = 0
+  const regionNames = Object.keys(simplified.Regions)
+  const prepared = []
   let minX = Number.POSITIVE_INFINITY
   let minY = Number.POSITIVE_INFINITY
   let minZ = Number.POSITIVE_INFINITY
@@ -682,7 +597,7 @@ function parseLitematic (simplified, options, sourcePath, nbtInfo, sourceFormat)
   let maxZ = Number.NEGATIVE_INFINITY
 
   for (const regionName of regionNames) {
-    const region = regions[regionName]
+    const region = simplified.Regions[regionName]
     if (!region || !region.Size || !region.Position) continue
 
     const sx = Number(region.Size.x)
@@ -705,165 +620,165 @@ function parseLitematic (simplified, options, sourcePath, nbtInfo, sourceFormat)
     maxY = Math.max(maxY, yAxis.min + yAxis.size - 1)
     maxZ = Math.max(maxZ, zAxis.min + zAxis.size - 1)
 
-    const regionOrigin = normalizePosition(xAxis.min, yAxis.min, zAxis.min)
-    const regionSize = normalizePosition(sx, sy, sz)
-
-    const regionPalette = Array.isArray(region.BlockStatePalette) ? region.BlockStatePalette : []
-    const packedStates = Array.isArray(region.BlockStates) ? region.BlockStates : []
-    const regionBlockCount = xAxis.size * yAxis.size * zAxis.size
-
-    totalPositions += regionBlockCount
-    if (regionPalette.length === 0) continue
-
-    const bitsPerBlock = Math.max(2, Math.ceil(Math.log2(Math.max(1, regionPalette.length))))
-    const unpackedStates = decodePackedLitematicStates(packedStates, bitsPerBlock, regionBlockCount)
-
-    for (let i = 0; i < unpackedStates.length; i++) {
-      const srcPaletteIndex = unpackedStates[i]
-      if (srcPaletteIndex < 0 || srcPaletteIndex >= regionPalette.length) continue
-
-      const local = positionFromIndexYZX(i, { x: xAxis.size, y: yAxis.size, z: zAxis.size })
-      const position = normalizePosition(xAxis.min + local.x, yAxis.min + local.y, zAxis.min + local.z)
-
-      const paletteEntry = regionPalette[srcPaletteIndex] || {}
-      const blockName = paletteEntry.Name || paletteEntry.name || null
-      if (isAirName(blockName) && !options.includeAir) continue
-
-      addBlockRecord({
-        blocks,
-        paletteAcc,
-        position,
-        structureOrigin: { x: 0, y: 0, z: 0 },
-        blockName,
-        namespaceName: blockName,
-        displayName: null,
-        stateId: null,
-        blockId: null,
-        metadata: null,
-        properties: paletteEntry.Properties || paletteEntry.properties || {},
-        blockEntityData: null,
-        source: {
-          format: 'litematic',
-          native: {
-            regionName,
-            regionOrigin,
-            regionSize
-          }
-        },
-        sourcePaletteIndex: srcPaletteIndex,
-        regionOrigin
-      })
-    }
+    prepared.push({
+      regionName,
+      xAxis,
+      yAxis,
+      zAxis,
+      palette: Array.isArray(region.BlockStatePalette) ? region.BlockStatePalette : [],
+      packedStates: Array.isArray(region.BlockStates) ? region.BlockStates : []
+    })
   }
 
   if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(minZ)) return null
 
-  const globalOffset = normalizePosition(minX, minY, minZ)
-  const globalSize = normalizePosition(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1)
+  const size = [maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1]
+  const builder = createUnifiedBuilder({
+    sourceFormat: format,
+    sourceEdition: 'java',
+    sourceVersion: simplified.MinecraftDataVersion ?? null,
+    parser: 'prismarine-nbt',
+    sourceDataVersion: simplified.MinecraftDataVersion ?? null,
+    targetVersion: options.targetVersion || null,
+    unknownPolicy: options.unknownPolicy || 'keep'
+  })
 
-  for (const block of blocks) {
-    const rel = relativePosition(block.position, globalOffset)
-    block.relativePosition = rel
-    block.relativePositionByScope.structure = rel
+  for (const region of prepared) {
+    const regionBlockCount = region.xAxis.size * region.yAxis.size * region.zAxis.size
+    if (region.palette.length === 0) continue
+
+    const bitsPerBlock = Math.max(2, Math.ceil(Math.log2(Math.max(1, region.palette.length))))
+    const unpackedStates = decodePackedLitematicStates(region.packedStates, bitsPerBlock, regionBlockCount)
+
+    for (let i = 0; i < unpackedStates.length; i++) {
+      const srcPaletteIndex = unpackedStates[i]
+      if (srcPaletteIndex < 0 || srcPaletteIndex >= region.palette.length) continue
+
+      const paletteEntry = region.palette[srcPaletteIndex] || {}
+      const blockName = paletteEntry.Name || paletteEntry.name || null
+      if (isAirName(blockName)) continue
+
+      const local = positionFromIndexYZX(i, {
+        x: region.xAxis.size,
+        y: region.yAxis.size,
+        z: region.zAxis.size
+      })
+
+      builder.addCanonicalBlock({
+        x: region.xAxis.min + local.x - minX,
+        y: region.yAxis.min + local.y - minY,
+        z: region.zAxis.min + local.z - minZ,
+        canonical: canonicalFromJavaBlock({
+          name: blockName,
+          props: paletteEntry.Properties || paletteEntry.properties || {}
+        })
+      })
+    }
   }
 
-  return {
-    meta: buildMeta({
-      sourceFile: sourcePath,
-      sourceFormat,
-      normalizedFormat: 'litematic',
-      parser: 'prismarine-nbt',
-      parserVersionHint: options.version,
-      parsedMinecraftVersion: simplified.MinecraftDataVersion ?? null,
-      nbtEndian: nbtInfo.nbtEndian,
-      includeAir: options.includeAir,
-      size: globalSize,
-      offset: globalOffset,
-      totalPositions,
-      outputBlockCount: blocks.length,
-      paletteCount: paletteAcc.entries.length,
-      extra: {
-        nbtParseHint: nbtInfo.nbtParseHint,
-        litematicVersion: simplified.Version ?? null,
-        litematicSubVersion: simplified.SubVersion ?? null,
-        regionCount: regionNames.length,
-        metadata: simplified.Metadata || null
-      }
-    }),
-    palette: paletteAcc.entries,
-    blocks
-  }
+  return builder.finalize(size)
 }
 
-function parseGenericNbt (simplified, options, sourcePath, nbtInfo, sourceFormat) {
-  return {
-    meta: buildMeta({
-      sourceFile: sourcePath,
-      sourceFormat,
-      normalizedFormat: 'nbt-generic',
-      parser: 'prismarine-nbt',
-      parserVersionHint: options.version,
-      parsedMinecraftVersion: null,
-      nbtEndian: nbtInfo.nbtEndian,
-      includeAir: options.includeAir,
-      size: null,
-      offset: null,
-      totalPositions: null,
-      outputBlockCount: 0,
-      paletteCount: 0,
-      extra: {
-        nbtParseHint: nbtInfo.nbtParseHint,
-        warning: 'NBT parsed successfully, but no recognized block-structure schema was detected.'
-      }
-    }),
-    palette: [],
-    blocks: [],
-    rawNbt: simplified
+function classifyNativeNbtSchema (simplified, declaredFormat) {
+  const unwrapped = unwrapSchematicRoot(simplified)
+
+  if (declaredFormat === 'schem') {
+    if (looksLikeSpongeV3Schematic(unwrapped)) return 'sponge-schematic-v3'
+    if (looksLikeSpongeSchematic(unwrapped)) return 'sponge-schematic'
+    return 'schem-nbt'
   }
+
+  if (declaredFormat === 'schematic') {
+    if (looksLikeMcEditSchematic(unwrapped)) return 'mcedit-schematic'
+    if (looksLikeSpongeSchematic(unwrapped)) return 'sponge-schematic'
+    if (looksLikeSpongeV3Schematic(unwrapped)) return 'sponge-schematic-v3'
+    return 'schematic-nbt'
+  }
+
+  if (declaredFormat === 'litematic') {
+    return isLitematicData(simplified) ? 'litematic' : 'litematic-nbt'
+  }
+
+  if (declaredFormat === 'mcstructure') {
+    return isBedrockMcstructureData(simplified) ? 'bedrock-mcstructure' : 'mcstructure-nbt'
+  }
+
+  if (declaredFormat === 'nbt') {
+    if (isLitematicData(simplified)) return 'litematic-in-nbt'
+    if (isJavaStructureNbt(simplified)) return 'java-structure-nbt'
+    if (isBedrockMcstructureData(simplified)) return 'bedrock-mcstructure-like-nbt'
+    return 'generic-nbt'
+  }
+
+  return 'unknown'
 }
 
-async function loadStructurePayload (buffer, format, options = {}, sourcePath = null) {
+async function loadNativeStructure (buffer, format, options = {}, sourcePath = null) {
+  if (format === 'schem' || format === 'schematic' || format === 'litematic' || format === 'mcstructure' || format === 'nbt') {
+    const nbtInfo = await parseNbtAuto(buffer)
+    return {
+      format,
+      schema: classifyNativeNbtSchema(nbtInfo.simplified, format),
+      parser: 'prismarine-nbt',
+      sourceFile: sourcePath,
+      nbtEndian: nbtInfo.nbtEndian,
+      nbtParseHint: nbtInfo.nbtParseHint,
+      versionHint: options.version || null,
+      data: nbtInfo.simplified
+    }
+  }
+
+  throw new Error(`Internal error: unsupported detected format ${format}`)
+}
+
+async function loadUnifiedStructure (buffer, format, options = {}) {
   const normalizedOptions = {
-    includeAir: Boolean(options.includeAir),
-    version: options.version
+    version: options.version,
+    targetVersion: options.targetVersion || null,
+    unknownPolicy: options.unknownPolicy || 'keep'
+  }
+
+  if (!['keep', 'drop'].includes(normalizedOptions.unknownPolicy)) {
+    throw new Error('Invalid unknown policy. Expected keep or drop')
   }
 
   if (format === 'schem' || format === 'schematic') {
-    return parseSchematicLike(buffer, normalizedOptions, sourcePath, format)
+    return parseUnifiedSchematicLike(buffer, format, normalizedOptions)
   }
 
   const nbtInfo = await parseNbtAuto(buffer)
   const { simplified } = nbtInfo
 
   if (format === 'litematic') {
-    const litematic = parseLitematic(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    const litematic = parseUnifiedLitematic(simplified, format, normalizedOptions)
     if (litematic) return litematic
     throw new Error('File extension is .litematic but required Litematic tags were not found')
   }
 
   if (format === 'mcstructure') {
-    const mcstructure = parseBedrockMcstructure(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    const mcstructure = parseUnifiedMcstructure(simplified, format, normalizedOptions)
     if (mcstructure) return mcstructure
     throw new Error('File extension is .mcstructure but Bedrock structure tags were not found')
   }
 
   if (format === 'nbt') {
-    const litematic = parseLitematic(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    const litematic = parseUnifiedLitematic(simplified, format, normalizedOptions)
     if (litematic) return litematic
 
-    const javaStructure = parseJavaStructureNbt(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    const javaStructure = parseUnifiedJavaStructureNbt(simplified, format, normalizedOptions)
     if (javaStructure) return javaStructure
 
-    const mcstructure = parseBedrockMcstructure(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    const mcstructure = parseUnifiedMcstructure(simplified, format, normalizedOptions)
     if (mcstructure) return mcstructure
 
-    return parseGenericNbt(simplified, normalizedOptions, sourcePath, nbtInfo, format)
+    throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
   }
 
   throw new Error(`Internal error: unsupported detected format ${format}`)
 }
 
 module.exports = {
+  classifyNativeNbtSchema,
   decodePackedLitematicStates,
   detectStructureFormat,
   isAirName,
@@ -874,5 +789,6 @@ module.exports = {
   positionFromIndexZYX,
   relativePosition,
   stripMinecraftNamespace,
-  loadStructurePayload
+  loadNativeStructure,
+  loadUnifiedStructure
 }

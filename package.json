@@ -4,9 +4,11 @@
   "description": "Minimal CLI for parsing / rendering / exporting minecraft structure block files (.schem, .schematic, .litematic, .nbt, .mcstructure) into readable data / pictures / 3D models",
   "scripts": {
     "parse": "node parse_mc.js",
-    "parse:ids": "node parse_mc_ids.js",
+    "parse:unified": "node parse_mc_unified.js",
     "serve": "node serve_mc.js",
-    "generate:vocab": "node scripts/generate_vocab.js",
+    "test": "node scripts/smoke_native_unified.js",
+    "lint": "node scripts/smoke_native_unified.js",
+    "type-check": "node scripts/smoke_native_unified.js",
     "build:assets": "node scripts/generate-assets.js",
     "build:client": "webpack --config webpack.config.js",
     "build": "npm run build:assets && npm run build:client",

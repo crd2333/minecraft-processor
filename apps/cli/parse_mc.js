@@ -2,7 +2,7 @@
 
 const fs = require('fs').promises
 const path = require('path')
-const { detectStructureFormat, loadStructurePayload } = require('../../src/structure_parser')
+const { detectStructureFormat, loadNativeStructure } = require('../../src/structure_parser')
 
 process.stdout.on('error', (err) => {
   if (err?.code === 'EPIPE') process.exit(0)
@@ -22,7 +22,8 @@ function showUsage () {
     '  -h, --help                  Show this help',
     '',
     'Output shape:',
-    '  { meta, palette, blocks }'
+    '  Thin native envelope: { format, schema, parser, ..., data }',
+    '  data is the parser-native readable JSON, not a unified IR.'
   ].join('\n'))
 }
 
@@ -98,13 +99,9 @@ async function main () {
   const detectedFormat = detectStructureFormat(inputPath)
 
   const buffer = await fs.readFile(inputPath)
-  const payload = await loadStructurePayload(buffer, detectedFormat, args, inputPath)
+  const nativePayload = await loadNativeStructure(buffer, detectedFormat, args, inputPath)
 
-  if (detectedFormat === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
-    throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
-  }
-
-  const json = JSON.stringify(payload, null, args.pretty ? 2 : 0)
+  const json = JSON.stringify(nativePayload, null, args.pretty ? 2 : 0)
 
   if (args.stdout) {
     process.stdout.write(`${json}\n`)
@@ -116,8 +113,8 @@ async function main () {
 
   console.log(`Parsed ${inputPath}`)
   console.log(`Detected format: ${detectedFormat}`)
-  console.log(`Normalized format: ${payload.meta?.normalizedFormat || 'unknown'}`)
-  console.log(`Blocks: ${payload.meta.outputBlockCount}, Palette: ${payload.meta.paletteCount}`)
+  console.log(`Native schema: ${nativePayload.schema || 'unknown'}`)
+  console.log(`Parser: ${nativePayload.parser || 'unknown'}`)
   console.log(`Wrote JSON to ${outputPath}`)
 }
 

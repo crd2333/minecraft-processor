@@ -2,7 +2,7 @@ const path = require('path')
 const fs = require('fs').promises
 const { Vec3 } = require('vec3')
 const { Schematic } = require('prismarine-schematic')
-const { detectStructureFormat, loadStructurePayload } = require('../../src/structure_parser')
+const { detectStructureFormat } = require('../../src/structure_parser')
 const { buildWorldFromPayload } = require('../../src/world_builder')
 
 const PROJECT_ROOT = path.resolve(__dirname, '../../..')
@@ -338,15 +338,10 @@ const main = async () => {
         )
       } catch (nativeSchemError) {
         console.warn(`Warning: native schematic parser failed (${nativeSchemError.message || nativeSchemError}). Falling back to generic parser.`)
-        const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, resolvedInputPath)
-        await applyPayloadToWorld(payload)
+        throw new Error(`Native schematic parser failed and generic render fallback has been removed: ${nativeSchemError.message || nativeSchemError}`)
       }
     } else {
-      const payload = await loadStructurePayload(buffer, format, { version, includeAir: false }, resolvedInputPath)
-      if (format === 'nbt' && payload.meta?.normalizedFormat === 'nbt-generic') {
-        throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
-      }
-      await applyPayloadToWorld(payload)
+      throw new Error('Legacy generic render payload loading has been removed. Rebuild render pipeline against the new unified/native architecture before using this format in serve_mc.js.')
     }
 
     boundingBox = showBoundingBox
@@ -530,7 +525,7 @@ const main = async () => {
   if (boundingBox) {
     console.log(`Bounding box origin (relative): ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`)
     console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)
-    console.log(`parse_mc_ids args: ${formatBoundingBoxArgsPreview(boundingBox)}`)
+    console.log(`Bounding box args preview: ${formatBoundingBoxArgsPreview(boundingBox)}`)
   }
   console.log(`Asset base directory: ${assetBaseDir}`)
   console.log(`Open http://127.0.0.1:${currentPort}`)

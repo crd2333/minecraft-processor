@@ -4,7 +4,7 @@
 
 ## 1. 项目定位
 
-这是一个 Node.js 工具链，面向 Minecraft 结构文件的**解析、可视化与导出**，支持：
+这是一个 Node.js 工具链，面向 Minecraft 结构文件的**原生解析、统一 IR 转换、可视化与导出**，支持：
 
 - `.schem`
 - `.schematic`
@@ -12,7 +12,7 @@
 - `.nbt`
 - `.mcstructure`
 
-核心用途偏向 ML/数据处理：把结构文件统一转换成稳定的数据格式，或导出索引化 payload 与渲染产物。
+核心用途偏向 ML/数据处理：把结构文件翻译成可读 native JSON，或转换成稳定的 unified IR，再供渲染与下游处理使用。
 
 ---
 
@@ -21,13 +21,13 @@
 根目录三个主要入口：
 
 1. `parse_mc.js`
-   - 标准化解析入口
-   - 输出完整语义数据：`{ meta, palette, blocks }`
+   - faithful readable native translator
+   - 输出薄封装：`{ format, schema, parser, ..., data }`
 
-2. `parse_mc_ids.js`
-   - ML 导向导出入口
-   - 读取预生成 vocab，把 block 映射为 index
-   - 输出：`{ meta, blocks }`，其中 `blocks = [[x, y, z, index], ...]`
+2. `parse_mc_unified.js`
+   - unified IR 导出入口
+   - 直接解析源文件并做统一化、映射与 unknown policy
+   - 输出：`{ meta, size, palette, blocks, entities }`
 
 3. `serve_mc.js`
    - 本地 web viewer 服务入口（Express + Socket.IO）
@@ -40,19 +40,20 @@
 
 ```text
 [入口层]
-  parse_mc.js / parse_mc_ids.js / serve_mc.js
+  parse_mc.js / parse_mc_unified.js / serve_mc.js
          │
          ▼
-[统一解析层]
+[native / unified 层]
    src/structure_parser.js
   - 格式识别
   - NBT 自动探测
-  - 多格式归一化解析
-  - 统一 meta/palette/blocks
+  - native 读取
+  - unified-ready payload 解析
          │
-         ├────────► [词表映射层]
-         │          src/block_vocab.js
-         │          (vocab 生成/校验/index 解析)
+         ├────────► [统一映射层]
+         │          src/structure_parser.js
+         │          + src/block_vocab.js
+         │          (canonical IR / vocab 校验)
          │
          └────────► [世界构建层]
                     src/world_builder.js
@@ -74,7 +75,8 @@
 主要职责：
 
 - `detectStructureFormat(inputPath)`：根据扩展名识别格式
-- `loadStructurePayload(buffer, format, options, sourcePath)`：统一解析总入口
+- `loadNativeStructure(buffer, format, options, sourcePath)`：native 解析总入口
+- `loadUnifiedStructure(buffer, format, options, sourcePath)`：unified 解析总入口
 
 内部主要解析分支：
 
@@ -92,21 +94,20 @@
 
 ---
 
-## 4.2 `parse_mc_ids.js` + `src/block_vocab.js`
+## 4.2 `parse_mc_unified.js` + `src/structure_parser.js`
 
 数据流：
 
-1. `loadStructurePayload()` 得到统一 blocks
-2. 读取并 `validateBlockVocabulary()`
-3. `resolveBlockIndex()` 做 name → index 映射
-4. 输出 ID-only payload
+1. `loadUnifiedStructure()` 直接解析源文件
+2. 在 `src/structure_parser.js` 中执行 canonicalization
+3. Bedrock palette 诊断收敛为 `mapping: { status, sourceKey }`
+4. 输出 unified IR
 
 设计要点：
 
-- unknown 固定 index=0（`__unknown__`）
-- entity/non-entity 由 `minecraft-data` 的 `boundingBox !== 'empty'` 分类
-- `--entity-only` 会过滤非 entity 方块
-- Bedrock 来源会先做 Bedrock→Java 名称/属性转换，再查 vocab
+- unknown 处理为 `keep|unresolved|vocab_unknown|drop`
+- Bedrock→Java 名称/属性转换仅发生在 unified 层
+- unified IR 不再输出 compact id payload
 
 ---
 
@@ -166,12 +167,12 @@
 
 ## 6. 关键数据契约
 
-1. 标准解析输出（parse）
-   - `{ meta, palette, blocks }`
+1. native 解析输出（parse）
+   - `{ format, schema, parser, ..., data }`
 
-2. ML 索引输出（parse:ids）
-   - `{ meta, blocks }`
-   - `blocks` 元组结构固定为 `['x', 'y', 'z', 'index']`
+2. unified IR 输出（parse:unified）
+   - `{ meta, size, palette, blocks, entities }`
+   - `blocks` 元组结构固定为 `['x', 'y', 'z', 'pid']`
 
 3. GBuffer 文件格式
    - magic: `MCGBUF01`
@@ -197,12 +198,12 @@
 1. 先读：`README.md`、`src/structure_parser.js`、`apps/cli/serve-mc/index.js`
 2. 再看任务方向：
    - 解析语义问题 → `src/structure_parser.js`
-   - 词表/索引问题 → `src/block_vocab.js` + `parse_mc_ids.js`
+   - unified mapping / vocab 问题 → `src/structure_parser.js` + `src/block_vocab.js`
    - Bedrock 映射问题 → `src/bedrock-adapter/convertBlocks.js` 与 `src/bedrock-adapter/postProcess.js`
    - Viewer 交互导出问题 → `apps/frontend/viewer/src/hooks/viewer-hooks.js` + `apps/frontend/viewer/src/client.js`
 3. 运行最小验证：
    - `node parse_mc.js assets/<file> --pretty --stdout`
-   - `node parse_mc_ids.js assets/<file> data/generated/block-vocab.<ver>.json --stdout --pretty`
+   - `node parse_mc_unified.js assets/<file> --target-version <ver> --stdout --pretty`
    - `node serve_mc.js assets/<file> --version <ver>`
 
 ---

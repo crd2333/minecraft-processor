@@ -7,7 +7,9 @@ function normalizeRenderableBlock (block) {
   const rawName = block.namespaceName || block.blockName || ''
 
   if (sourceFormat === 'mcstructure-bedrock') {
-    const converted = convertBedrockBlock(stripMinecraftNamespace(rawName), block.properties || {})
+    const converted = convertBedrockBlock(stripMinecraftNamespace(rawName), block.properties || {}, {
+      sourceVersion: block.source?.native?.paletteVersion || null
+    })
     return {
       name: converted.name,
       properties: converted.properties

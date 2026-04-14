@@ -1,15 +1,16 @@
 'use strict'
 
-const blocksB2J = require('../../data/generated/blocksB2J.json')
-const { stripMinecraftNamespace } = require('../structure_parser')
+const minecraftDataRaw = require('minecraft-data/data.js')
+
+function stripMinecraftNamespace (name) {
+  if (!name) return ''
+  return name.startsWith('minecraft:') ? name.slice('minecraft:'.length) : name
+}
 
 /**
  * Bedrock Edition → Java Edition block conversion:
- * first block-by-block conversion powered by a pre-generated mapping table.
+ * first block-by-block conversion powered by upstream versioned minecraft-data mappings.
  * Then a world post-processing step to fix up properties that are missing but can be derived from world context.
- *
- * Runtime prerequisite:
- *   ship data/generated/blocksB2J.json with the release artifacts.
  */
 
 
@@ -61,7 +62,7 @@ const BOOL_PROPS = new Set([
   'wall_post_bit'
 ])
 
-// Serialise a Bedrock states object into the same canonical bracket notation used in data/generated/blocksB2J.json.
+// Serialise a Bedrock states object into the canonical key format used by minecraft-data bedrock mappings.
 function serializeBedrockKey (name, states) {
   const fullName = name.includes(':') ? name : 'minecraft:' + name
   const keys = Object.keys(states).sort()
@@ -97,6 +98,34 @@ function parseJavaStr (jStr) {
   return { name, properties }
 }
 // #endregion Conversion utils
+
+const upstreamMappingCache = new Map()
+
+function normalizeBedrockVersionKey (sourceVersion) {
+  if (!sourceVersion) return null
+
+  if (minecraftDataRaw?.bedrock?.[sourceVersion]) return sourceVersion
+  return null
+}
+
+function getUpstreamBedrockMapping (sourceVersion) {
+  const normalizedVersion = normalizeBedrockVersionKey(sourceVersion)
+  if (!normalizedVersion) return null
+  if (upstreamMappingCache.has(normalizedVersion)) return upstreamMappingCache.get(normalizedVersion)
+
+  const mapping = minecraftDataRaw?.bedrock?.[normalizedVersion]?.blocksB2J || null
+  upstreamMappingCache.set(normalizedVersion, mapping)
+  return mapping
+}
+
+function getBedrockToJavaMapping (sourceVersion) {
+  const upstream = getUpstreamBedrockMapping(sourceVersion)
+  return {
+    mapping: upstream || {},
+    source: upstream ? `minecraft-data bedrock ${normalizeBedrockVersionKey(sourceVersion)}` : null
+  }
+}
+
 /**
  * Convert a Bedrock block (name + states from a .mcstructure palette entry)
  * into the { name, properties } shape expected by
@@ -106,19 +135,36 @@ function parseJavaStr (jStr) {
  *                           "minecraft:" namespace prefix.
  * @param {Record<string, string|number|boolean>} states
  *                           Bedrock block states as parsed by prismarine-nbt.
- * @returns {{ name: string, properties: Record<string, string> }}
+ * @param {{ sourceVersion?: string|null }} [options]
+ * @returns {{ name: string, properties: Record<string, string>, matched: boolean, mappingSource: string|null, sourceKey: string }}
  */
-function convertBedrockBlock (rawName, states) {
+function convertBedrockBlock (rawName, states, options = {}) {
   const key = serializeBedrockKey(rawName, states)
-  const jStr = blocksB2J[key]
+  const { mapping, source } = getBedrockToJavaMapping(options.sourceVersion)
+  const jStr = mapping[key]
   if (jStr) {
     const { name, properties } = parseJavaStr(jStr)
     const shortName = stripMinecraftNamespace(name)
-    return { name: shortName, properties }
+    return {
+      name: shortName,
+      properties,
+      matched: true,
+      mappingSource: source,
+      sourceKey: key
+    }
   }
 
   const shortName = stripMinecraftNamespace(rawName)
-  return { name: shortName, properties: {} }
+  return {
+    name: shortName,
+    properties: {},
+    matched: false,
+    mappingSource: source,
+    sourceKey: key
+  }
 }
 
-module.exports = { convertBedrockBlock }
+module.exports = {
+  convertBedrockBlock,
+  getBedrockToJavaMapping
+}

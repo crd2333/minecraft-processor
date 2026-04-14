@@ -12,41 +12,68 @@ npm install
 ```
 
 ## Usage
-`parse_mc.js` parses structure block files into normalized JSON (`{ meta, palette, blocks }`).
+`parse_mc.js` is the faithful readable native translator. It reads a structure file and emits a thin descriptive envelope whose `data` field is parser-native readable JSON. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
 
-`scripts/generate_vocab.js` is used to pre-generate a fixed Java block vocabulary for a target version under `data/generated/`. It reserves index `0` for unknown blocks, assigns entity blocks to one continuous index range, and assigns non-entity blocks to a second continuous range.
+`parse_mc_unified.js` is the canonical ML/data-oriented command. It parses source files directly, applies edition/version mapping only at the unified layer, and outputs the fixed IR:
 
-`parse_mc_ids.js` is used to export a minimal ML-oriented payload. It reuses the shared structure parser, converts Bedrock block names to Java names when needed, and outputs `blocks: [[x, y, z, index], ...]` by looking up a pre-generated vocabulary file from `data/generated/`. If you only want entity blocks, pass `--entity-only` and non-entity blocks will be ignored during export.
+```json
+{
+  "meta": {
+    "DataVersion": 4189,
+    "source": { "format": "mcstructure", "edition": "bedrock", "version": null, "parser": "prismarine-nbt" },
+    "target": { "edition": "java", "version": "1.21.4" },
+    "coordinateSpace": "relative",
+    "unknownPolicy": "keep",
+    "stats": { "paletteSize": 1, "blockCount": 1, "entityCount": 0, "unresolvedPaletteCount": 0, "unresolvedBlockCount": 0, "droppedBlockCount": 0 }
+  },
+  "size": [1, 1, 1],
+  "palette": [{ "name": "minecraft:stone", "props": {} }],
+  "blocks": [[0, 0, 0, 0]],
+  "entities": []
+}
+```
 
-The current entity/non-entity split is based on `minecraft-data` metadata: a block is treated as an entity block when `boundingBox !== 'empty'`.
+Unified palette entries are minimal by default: `{ name, props }`.
+
+For Bedrock-sourced entries only, the palette may additionally include:
+
+- `mapping`: `{ status, sourceKey }`
+
+`blocks[*][3]` is still the palette id, but `pid` is now implicit from the palette array index and is no longer stored on palette entries.
+
+Unknown handling is explicit via `--unknown-policy keep|drop`.
+
+`parse_mc_ids.js` has been removed by design. Compact numeric vocabulary export is no longer a top-level CLI contract.
+
+Unified parsing is version-targeted canonical Java block-state output only. Vocabulary/export semantics are no longer part of the unified CLI contract.
 
 `serve_mc.js` is used to show the structure block files in a web browser using key libraries from PrismarineJS. It also provides an API to export the structure block files into pictures and 3D models.
 
-For `.schem/.schematic`, `serve_mc.js` first tries native `prismarine-schematic` parsing for accurate state-id handling. If native parsing fails for a valid but incompatible variant (for example Sponge v3 layouts), it now falls back to the shared parser automatically instead of crashing.
+For `.schem/.schematic`, `serve_mc.js` first tries native `prismarine-schematic` parsing for accurate state-id handling. The old generic render-coupled parser fallback has been removed as part of the unified parser cleanup and render will need a later rebuild for broader format support.
 
 If serve_mc.js reports missing built assets, run npm run build first.
 
 Example:
 
 ```bash
-npm run generate:vocab -- 1.21.4
-
-# Full normalized parse
+# Native parse
 node parse_mc.js assets/xxx.schem --pretty
 
-# ID-only ML payload
-node parse_mc_ids.js assets/xxx.mcstructure data/generated/block-vocab.1.21.4.json --entity-only --stdout --pretty
+# Unified canonical payload
+node parse_mc_unified.js assets/xxx.mcstructure --target-version 1.21.4 --pretty
 
 # Viewer
 node serve_mc.js assets/xxx.schem --version 1.21.4 --port 3000
 ```
 
-A minimal Python subprocess example is available at `scripts/python_example.py`. It reads the pre-generated vocabulary from `data/generated/block-vocab.1.20.1.json` and only calls `parse_mc_ids.js` at runtime.
+A minimal Python subprocess example is available at `scripts/python_example.py`. It reads unified JSON from `parse_mc_unified.js`.
 
 ## Code Layout
-`parse_mc.js`, `serve_mc.js`, `parse_mc_ids.js` are the only root entrypoints.
+`parse_mc.js` and `serve_mc.js` remain stable root entrypoints. `parse_mc_unified.js` is the canonical unified-output command. `parse_mc_ids.js` has been deleted.
 
-Shared structure parsing logic now lives under `src/structure_parser.js`: shared format detection, NBT probing, coordinate helpers, and the unified structure-to-payload loader used by both parse and serve flows.
+Shared structure parsing logic now lives under `src/structure_parser.js`: shared format detection, NBT probing, coordinate helpers, and native parse support.
+
+Unified parsing also lives in `src/structure_parser.js`: the same shared module now owns native loading and unified IR construction.
 
 Rendering-specific world population logic lives under `src/world_builder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed.
 
@@ -111,3 +138,12 @@ python scripts/read_gbuffer.py gbuffer.bin --save --out gbuffer_out
 ```
 
 This script prints tensor stats and writes `.npy` arrays always. If `imageio` is available, it also writes PNG previews (`rgb.png`, `seg.png`, `mask.png`, `depth_norm.png`) for remote/headless inspection.
+
+
+## Reference
+Structure files specifications:
+- `.schematic`: `https://minecraft.wiki/w/Schematic_file_format`
+- `.schem`: `https://github.com/SpongePowered/Schematic-Specification/blob/master/versions/schematic-3.md` (and v1, v2)
+- `.litematic`: not found yet, maybe there does not exist such a spec, see `https://github.com/maruohon/litematica/issues/53`
+- `.nbt`: `https://minecraft.wiki/w/Structure_block_file_format` or in Chinese `https://zh.minecraft.wiki/w/%E7%BB%93%E6%9E%84%E5%AD%98%E5%82%A8%E6%A0%BC%E5%BC%8F`
+- `.mcstructure`: `https://wiki.bedrock.dev/nbt/mcstructure` or in Chinese `https://zh.minecraft.wiki/w/%E5%9F%BA%E5%B2%A9%E7%89%88%E7%BB%93%E6%9E%84%E6%96%87%E4%BB%B6`
