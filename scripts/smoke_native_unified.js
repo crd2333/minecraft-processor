@@ -14,6 +14,11 @@ function assertNativeContract (native, fixturePath) {
   assert(!Object.prototype.hasOwnProperty.call(native, 'palette'), `native parse must not expose unified palette for ${fixturePath}`)
   assert(!Object.prototype.hasOwnProperty.call(native, 'blocks'), `native parse must not expose unified blocks for ${fixturePath}`)
   assert(!Object.prototype.hasOwnProperty.call(native, 'entities'), `native parse must not expose unified entities for ${fixturePath}`)
+
+  if (fixturePath.endsWith('.schem') || fixturePath.endsWith('.schematic') || fixturePath.endsWith('.litematic')) {
+    assert(native.data._derivedReadable, `native parse missing derived readable view for ${fixturePath}`)
+    assert(Array.isArray(native.data._derivedReadable.regions) || native.data._derivedReadable.decodedBlocks || native.data._derivedReadable.primaryLayerBlocks, `native parse derived readable view missing decoded content for ${fixturePath}`)
+  }
 }
 
 function assertUnifiedContract (unified, fixturePath) {

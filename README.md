@@ -12,7 +12,7 @@ npm install
 ```
 
 ## Usage
-`parse_mc.js` is the faithful readable native translator. It reads a structure file and emits a thin descriptive envelope whose `data` field is parser-native readable JSON. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
+`parse_mc.js` is the faithful readable native translator. It reads a structure file and emits a thin descriptive envelope whose `data` field is parser-native readable JSON. For compact NBT-based formats such as `.schematic`, `.schem`, and `.litematic`, the native payload now preserves original simplified source fields while adding format-aware derived inspection views under `data._derivedReadable`. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
 
 `parse_mc_unified.js` is the canonical ML/data-oriented command. It parses source files directly, applies edition/version mapping only at the unified layer, and outputs the fixed IR:
 

@@ -201,6 +201,280 @@ function decodeVarintArray (values) {
   return out
 }
 
+const MAX_NATIVE_READABLE_BLOCKS = 2048
+
+function sampleIndices (total, limit = MAX_NATIVE_READABLE_BLOCKS) {
+  if (total <= 0) return []
+  if (total <= limit) return Array.from({ length: total }, (_, index) => index)
+  if (limit <= 1) return [0]
+
+  const out = []
+  for (let i = 0; i < limit; i++) {
+    const index = Math.round((i * (total - 1)) / (limit - 1))
+    if (out[out.length - 1] !== index) out.push(index)
+  }
+  return out
+}
+
+function buildReadableEntries (totalEntries, createEntry, limit = MAX_NATIVE_READABLE_BLOCKS) {
+  const indices = sampleIndices(totalEntries, limit)
+  return {
+    totalEntries,
+    sampledEntries: indices.length,
+    truncated: indices.length < totalEntries,
+    entries: indices.map((index) => createEntry(index))
+  }
+}
+
+function addHighBitsFromMcEditAddBlocks (index, addBlocks) {
+  if (!Array.isArray(addBlocks) || addBlocks.length === 0) return 0
+  const packed = Number(addBlocks[Math.floor(index / 2)] || 0) & 0xFF
+  return index % 2 === 0 ? (packed & 0x0F) : ((packed >> 4) & 0x0F)
+}
+
+function normalizeSpongePaletteEntries (paletteObject) {
+  const entries = []
+  for (const [blockState, paletteIndexRaw] of Object.entries(paletteObject || {})) {
+    const paletteIndex = Number(paletteIndexRaw)
+    if (!Number.isFinite(paletteIndex) || paletteIndex < 0) continue
+    entries[paletteIndex] = {
+      paletteIndex,
+      blockState
+    }
+  }
+
+  return Array.from({ length: entries.length }, (_, paletteIndex) => entries[paletteIndex] || { paletteIndex, blockState: null })
+}
+
+function getSpongeBlockContainer (data) {
+  if (looksLikeSpongeV3Schematic(data)) return data.Blocks
+  if (looksLikeSpongeSchematic(data)) return data
+  return null
+}
+
+function decodeSpongeBlockIndices (data, volume) {
+  const container = getSpongeBlockContainer(data)
+  if (!container) return null
+
+  const rawData = Array.from(container.Data || container.BlockData || [], (value) => Number(value))
+  const decoded = rawData.length === volume ? rawData : decodeVarintArray(rawData)
+  if (decoded.length !== volume) {
+    throw new Error(`Invalid Sponge schematic block data length: got ${decoded.length}, expected ${volume}`)
+  }
+
+  return decoded
+}
+
+function createReadableMcEditSchematicView (data) {
+  const width = Number(data.Width) || 0
+  const height = Number(data.Height) || 0
+  const length = Number(data.Length) || 0
+  const volume = width * height * length
+  if (!Array.isArray(data.Blocks) || !Array.isArray(data.Data)) return null
+
+  const dimensions = { x: width, y: height, z: length }
+  const blocks = Array.from(data.Blocks, (value) => Number(value) & 0xFF)
+  const metadata = Array.from(data.Data, (value) => Number(value) & 0xFF)
+  const addBlocks = Array.isArray(data.AddBlocks) ? Array.from(data.AddBlocks, (value) => Number(value) & 0xFF) : []
+
+  return {
+    format: 'mcedit-schematic-readable',
+    blockOrder: 'YZX',
+    dimensions,
+    volume,
+    hasAddBlocks: addBlocks.length > 0,
+    decodedBlocks: buildReadableEntries(Math.min(volume, blocks.length, metadata.length), (index) => {
+      const pos = positionFromIndexYZX(index, dimensions)
+      const lowId = blocks[index] || 0
+      const highId = addHighBitsFromMcEditAddBlocks(index, addBlocks)
+      return {
+        index,
+        position: pos,
+        lowId,
+        highId,
+        legacyBlockId: lowId + (highId << 8),
+        legacyData: metadata[index] || 0
+      }
+    })
+  }
+}
+
+function createReadableSpongeSchematicView (data) {
+  const width = Number(data.Width) || 0
+  const height = Number(data.Height) || 0
+  const length = Number(data.Length) || 0
+  const volume = width * height * length
+  const dimensions = { x: width, y: height, z: length }
+  const container = getSpongeBlockContainer(data)
+  if (!container) return null
+
+  const paletteEntries = normalizeSpongePaletteEntries(container.Palette || data.Palette)
+  const blockIndices = decodeSpongeBlockIndices(data, volume)
+  if (!blockIndices) return null
+
+  return {
+    format: looksLikeSpongeV3Schematic(data) ? 'sponge-schematic-v3-readable' : 'sponge-schematic-readable',
+    blockOrder: 'YZX',
+    dimensions,
+    volume,
+    paletteEntries,
+    decodedBlocks: buildReadableEntries(blockIndices.length, (index) => {
+      const pos = positionFromIndexYZX(index, dimensions)
+      const paletteIndex = Number(blockIndices[index]) || 0
+      const paletteEntry = paletteEntries[paletteIndex] || { paletteIndex, blockState: null }
+      return {
+        index,
+        position: pos,
+        paletteIndex,
+        blockState: paletteEntry.blockState
+      }
+    })
+  }
+}
+
+function createReadableLitematicRegionView (regionName, region) {
+  if (!region || !region.Size || !region.Position) return null
+
+  const sx = Number(region.Size.x) || 0
+  const sy = Number(region.Size.y) || 0
+  const sz = Number(region.Size.z) || 0
+  const ox = Number(region.Position.x) || 0
+  const oy = Number(region.Position.y) || 0
+  const oz = Number(region.Position.z) || 0
+  const xAxis = litematicAxisMinAndSize(ox, sx)
+  const yAxis = litematicAxisMinAndSize(oy, sy)
+  const zAxis = litematicAxisMinAndSize(oz, sz)
+  const volume = xAxis.size * yAxis.size * zAxis.size
+  const paletteEntries = Array.isArray(region.BlockStatePalette)
+    ? region.BlockStatePalette.map((entry, paletteIndex) => ({
+        paletteIndex,
+        blockState: entry?.Name || entry?.name || null,
+        properties: entry?.Properties || entry?.properties || {}
+      }))
+    : []
+
+  let decodedStates = null
+  if (Array.isArray(region.BlockStates) && volume > 0 && paletteEntries.length > 0) {
+    const bitsPerBlock = Math.max(2, Math.ceil(Math.log2(Math.max(1, paletteEntries.length))))
+    decodedStates = decodePackedLitematicStates(region.BlockStates, bitsPerBlock, volume)
+  }
+
+  return {
+    regionName,
+    blockOrder: 'YZX',
+    origin: { x: ox, y: oy, z: oz },
+    signedSize: { x: sx, y: sy, z: sz },
+    bounds: {
+      min: { x: xAxis.min, y: yAxis.min, z: zAxis.min },
+      max: {
+        x: xAxis.min + Math.max(0, xAxis.size - 1),
+        y: yAxis.min + Math.max(0, yAxis.size - 1),
+        z: zAxis.min + Math.max(0, zAxis.size - 1)
+      },
+      size: { x: xAxis.size, y: yAxis.size, z: zAxis.size }
+    },
+    paletteEntries,
+    decodedBlocks: decodedStates
+      ? buildReadableEntries(decodedStates.length, (index) => {
+          const local = positionFromIndexYZX(index, {
+            x: xAxis.size,
+            y: yAxis.size,
+            z: zAxis.size
+          })
+          const paletteIndex = Number(decodedStates[index]) || 0
+          const paletteEntry = paletteEntries[paletteIndex] || { paletteIndex, blockState: null, properties: {} }
+          return {
+            index,
+            localPosition: local,
+            worldPosition: {
+              x: xAxis.min + local.x,
+              y: yAxis.min + local.y,
+              z: zAxis.min + local.z
+            },
+            paletteIndex,
+            blockState: paletteEntry.blockState,
+            properties: paletteEntry.properties
+          }
+        })
+      : null
+  }
+}
+
+function createReadableLitematicView (data) {
+  if (!isLitematicData(data)) return null
+  const regions = Object.entries(data.Regions)
+    .map(([regionName, region]) => createReadableLitematicRegionView(regionName, region))
+    .filter(Boolean)
+
+  return {
+    format: 'litematic-readable',
+    regionCount: regions.length,
+    regions
+  }
+}
+
+function createReadableMcstructureView (data) {
+  if (!isBedrockMcstructureData(data)) return null
+
+  const size = {
+    x: Number(data.size[0]) || 0,
+    y: Number(data.size[1]) || 0,
+    z: Number(data.size[2]) || 0
+  }
+  const paletteEntries = (data.structure?.palette?.default?.block_palette || []).map((entry, paletteIndex) => ({
+    paletteIndex,
+    name: entry?.name || null,
+    states: entry?.states || {},
+    version: entry?.version ?? null
+  }))
+
+  const primaryIndices = Array.isArray(data.structure?.block_indices?.[0])
+    ? data.structure.block_indices[0]
+    : []
+
+  return {
+    format: 'bedrock-mcstructure-readable',
+    blockOrder: 'ZYX',
+    dimensions: size,
+    paletteEntries,
+    primaryLayerBlocks: buildReadableEntries(primaryIndices.length, (index) => {
+      const pos = positionFromIndexZYX(index, size)
+      const paletteIndex = Number(primaryIndices[index])
+      const paletteEntry = paletteEntries[paletteIndex] || { paletteIndex, name: null, states: {}, version: null }
+      return {
+        index,
+        position: pos,
+        paletteIndex,
+        blockState: paletteEntry.name,
+        states: paletteEntry.states
+      }
+    })
+  }
+}
+
+function formatNativeReadableData (simplified, declaredFormat, schema) {
+  const unwrapped = unwrapSchematicRoot(simplified)
+  const readableView = declaredFormat === 'schematic'
+    ? (createReadableMcEditSchematicView(unwrapped) || createReadableSpongeSchematicView(unwrapped))
+    : declaredFormat === 'schem'
+        ? createReadableSpongeSchematicView(unwrapped)
+        : declaredFormat === 'litematic'
+            ? createReadableLitematicView(simplified)
+            : declaredFormat === 'mcstructure'
+                ? createReadableMcstructureView(simplified)
+                : null
+
+  if (!readableView) return simplified
+
+  return {
+    ...simplified,
+    _derivedReadable: {
+      schema,
+      ...readableView
+    }
+  }
+}
+
 function createSchematicFromSpongeV3 (nbtData, versionHint) {
   const width = Number(nbtData.Width)
   const height = Number(nbtData.Height)
@@ -738,15 +1012,16 @@ function classifyNativeNbtSchema (simplified, declaredFormat) {
 async function loadNativeStructure (buffer, format, options = {}, sourcePath = null) {
   if (format === 'schem' || format === 'schematic' || format === 'litematic' || format === 'mcstructure' || format === 'nbt') {
     const nbtInfo = await parseNbtAuto(buffer)
+    const schema = classifyNativeNbtSchema(nbtInfo.simplified, format)
     return {
       format,
-      schema: classifyNativeNbtSchema(nbtInfo.simplified, format),
+      schema,
       parser: 'prismarine-nbt',
       sourceFile: sourcePath,
       nbtEndian: nbtInfo.nbtEndian,
       nbtParseHint: nbtInfo.nbtParseHint,
       versionHint: options.version || null,
-      data: nbtInfo.simplified
+      data: formatNativeReadableData(nbtInfo.simplified, format, schema)
     }
   }
 
