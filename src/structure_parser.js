@@ -8,6 +8,7 @@ const { Vec3 } = require('vec3')
 const minecraftData = require('minecraft-data')
 const versions = require('minecraft-data').versions.pc
 const { convertBedrockBlock } = require('./bedrock-adapter/convertBlocks')
+const { postProcessUnifiedBedrockStructure } = require('./bedrock-adapter/postProcess')
 
 function detectStructureFormat (inputPath) {
   const ext = path.extname(inputPath).toLowerCase()
@@ -436,6 +437,27 @@ function createUnifiedBuilder ({ sourceFormat, sourceEdition, sourceVersion, par
   return { addCanonicalBlock, finalize }
 }
 
+async function postProcessUnifiedBedrockResult (result, options) {
+  if (!result || result.meta?.source?.edition !== 'bedrock') return result
+
+  const processed = await postProcessUnifiedBedrockStructure({
+    palette: result.palette,
+    blocks: result.blocks,
+    targetVersion: options.targetVersion || null,
+    logger: options.logger
+  })
+
+  return {
+    ...result,
+    meta: {
+      ...result.meta,
+      stats: finalizeStats({ ...result.meta.stats }, processed.palette, processed.blocks, result.entities)
+    },
+    palette: processed.palette,
+    blocks: processed.blocks
+  }
+}
+
 function canonicalFromJavaBlock ({ name, props }) {
   return {
     name: ensureNamespacedName(name),
@@ -735,7 +757,8 @@ async function loadUnifiedStructure (buffer, format, options = {}) {
   const normalizedOptions = {
     version: options.version,
     targetVersion: options.targetVersion || null,
-    unknownPolicy: options.unknownPolicy || 'keep'
+    unknownPolicy: options.unknownPolicy || 'keep',
+    logger: options.logger
   }
 
   if (!['keep', 'drop'].includes(normalizedOptions.unknownPolicy)) {
@@ -757,7 +780,7 @@ async function loadUnifiedStructure (buffer, format, options = {}) {
 
   if (format === 'mcstructure') {
     const mcstructure = parseUnifiedMcstructure(simplified, format, normalizedOptions)
-    if (mcstructure) return mcstructure
+    if (mcstructure) return postProcessUnifiedBedrockResult(mcstructure, normalizedOptions)
     throw new Error('File extension is .mcstructure but Bedrock structure tags were not found')
   }
 
@@ -769,7 +792,7 @@ async function loadUnifiedStructure (buffer, format, options = {}) {
     if (javaStructure) return javaStructure
 
     const mcstructure = parseUnifiedMcstructure(simplified, format, normalizedOptions)
-    if (mcstructure) return mcstructure
+    if (mcstructure) return postProcessUnifiedBedrockResult(mcstructure, normalizedOptions)
 
     throw new Error('Unrecognised .nbt schema. Tried: Not a valid Java NBT structure: missing palette or blocks array | Not a valid Litematic: missing Regions tag | Not a valid Bedrock .mcstructure: missing required fields')
   }

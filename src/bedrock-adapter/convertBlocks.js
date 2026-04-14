@@ -62,21 +62,34 @@ const BOOL_PROPS = new Set([
   'wall_post_bit'
 ])
 
-// Serialise a Bedrock states object into the canonical key format used by minecraft-data bedrock mappings.
-function serializeBedrockKey (name, states) {
+function normalizeBoolValue (value) {
+  return value === 1 || value === true || value === '1' || value === 'true'
+}
+
+function formatBedrockStateValue (key, value, boolStyle) {
+  if (BOOL_PROPS.has(key)) {
+    const normalized = normalizeBoolValue(value)
+    if (boolStyle === 'numeric') return normalized ? '1' : '0'
+    return normalized ? 'true' : 'false'
+  }
+
+  return String(value)
+}
+
+// Serialise a Bedrock states object into candidate key formats used by minecraft-data bedrock mappings.
+function serializeBedrockKeys (name, states) {
   const fullName = name.includes(':') ? name : 'minecraft:' + name
   const keys = Object.keys(states).sort()
-  if (keys.length === 0) return fullName + '[]'
+  if (keys.length === 0) return [fullName + '[]']
 
-  const inner = keys.map(key => {
-    const value = states[key]
-    if (BOOL_PROPS.has(key)) {
-      return key + '=' + ((value === 1 || value === true || value === '1' || value === 'true') ? 'true' : 'false')
-    }
-    return key + '=' + value
-  }).join(',')
+  const makeKey = (boolStyle) => {
+    const inner = keys.map(key => key + '=' + formatBedrockStateValue(key, states[key], boolStyle)).join(',')
+    return fullName + '[' + inner + ']'
+  }
 
-  return fullName + '[' + inner + ']'
+  const booleanKey = makeKey('boolean')
+  const numericKey = makeKey('numeric')
+  return booleanKey === numericKey ? [booleanKey] : [booleanKey, numericKey]
 }
 
 // Parse the Java-side block string from the mapping table, which is in the format "minecraft:block_name[prop=value,...]".
@@ -101,11 +114,86 @@ function parseJavaStr (jStr) {
 
 const upstreamMappingCache = new Map()
 
-function normalizeBedrockVersionKey (sourceVersion) {
-  if (!sourceVersion) return null
+function decodeBedrockVersionNumber (sourceVersion) {
+  if (!Number.isInteger(sourceVersion) || sourceVersion <= 0) return null
 
-  if (minecraftDataRaw?.bedrock?.[sourceVersion]) return sourceVersion
+  return [
+    (sourceVersion >>> 24) & 0xFF,
+    (sourceVersion >>> 16) & 0xFF,
+    (sourceVersion >>> 8) & 0xFF,
+    sourceVersion & 0xFF
+  ]
+}
+
+function listCandidateVersionKeys (sourceVersion) {
+  if (sourceVersion === null || sourceVersion === undefined || sourceVersion === '') return []
+
+  const candidates = []
+  const seen = new Set()
+  const add = (value) => {
+    if (!value) return
+    const normalized = String(value).trim()
+    if (!normalized || seen.has(normalized)) return
+    seen.add(normalized)
+    candidates.push(normalized)
+  }
+
+  if (typeof sourceVersion === 'number') {
+    add(String(sourceVersion))
+    const decoded = decodeBedrockVersionNumber(sourceVersion)
+    if (decoded) {
+      add(decoded.join('.'))
+      add(decoded.slice(0, 3).join('.'))
+    }
+  } else if (typeof sourceVersion === 'string') {
+    add(sourceVersion)
+
+    const numeric = Number(sourceVersion)
+    if (Number.isInteger(numeric) && numeric > 0) {
+      const decoded = decodeBedrockVersionNumber(numeric)
+      if (decoded) {
+        add(decoded.join('.'))
+        add(decoded.slice(0, 3).join('.'))
+      }
+    }
+
+    const segments = sourceVersion.split('.').map(part => part.trim()).filter(Boolean)
+    if (segments.length >= 4) add(segments.slice(0, 3).join('.'))
+  }
+
+  return candidates
+}
+
+function selectFallbackVersionKey (candidates) {
+  const availableVersions = Object.keys(minecraftDataRaw?.bedrock || {})
+  for (const candidate of candidates) {
+    const parts = candidate.split('.').map(part => Number(part))
+    if (parts.some(Number.isNaN)) continue
+
+    if (parts.length >= 3) {
+      const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`
+      if (minecraftDataRaw?.bedrock?.[prefix]) return prefix
+    }
+
+    if (parts.length >= 2) {
+      const prefix = `${parts[0]}.${parts[1]}.`
+      const familyMatches = availableVersions
+        .filter(version => version.startsWith(prefix))
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+      if (familyMatches.length > 0) return familyMatches[familyMatches.length - 1]
+    }
+  }
+
   return null
+}
+
+function normalizeBedrockVersionKey (sourceVersion) {
+  const candidates = listCandidateVersionKeys(sourceVersion)
+  for (const candidate of candidates) {
+    if (minecraftDataRaw?.bedrock?.[candidate]) return candidate
+  }
+
+  return selectFallbackVersionKey(candidates)
 }
 
 function getUpstreamBedrockMapping (sourceVersion) {
@@ -139,18 +227,20 @@ function getBedrockToJavaMapping (sourceVersion) {
  * @returns {{ name: string, properties: Record<string, string>, matched: boolean, mappingSource: string|null, sourceKey: string }}
  */
 function convertBedrockBlock (rawName, states, options = {}) {
-  const key = serializeBedrockKey(rawName, states)
+  const sourceKeys = serializeBedrockKeys(rawName, states)
   const { mapping, source } = getBedrockToJavaMapping(options.sourceVersion)
-  const jStr = mapping[key]
-  if (jStr) {
-    const { name, properties } = parseJavaStr(jStr)
-    const shortName = stripMinecraftNamespace(name)
-    return {
-      name: shortName,
-      properties,
-      matched: true,
-      mappingSource: source,
-      sourceKey: key
+  for (const key of sourceKeys) {
+    const jStr = mapping[key]
+    if (jStr) {
+      const { name, properties } = parseJavaStr(jStr)
+      const shortName = stripMinecraftNamespace(name)
+      return {
+        name: shortName,
+        properties,
+        matched: true,
+        mappingSource: source,
+        sourceKey: key
+      }
     }
   }
 
@@ -160,7 +250,7 @@ function convertBedrockBlock (rawName, states, options = {}) {
     properties: {},
     matched: false,
     mappingSource: source,
-    sourceKey: key
+    sourceKey: sourceKeys[0]
   }
 }
 

@@ -1,6 +1,13 @@
 'use strict'
 
-const { isAirName } = require('../structure_parser')
+const prismarineBlock = require('prismarine-block')
+const prismarineChunk = require('prismarine-chunk')
+const prismarineWorld = require('prismarine-world')
+const { Vec3 } = require('vec3')
+
+function isAirName (name) {
+  return name === 'air' || name === 'minecraft:air'
+}
 
 // #region Post-process utils
 const HORIZONTAL_OFFSETS = {
@@ -520,4 +527,126 @@ async function postProcessWorld ({ world, Block, Vec3, positions, logger = conso
 }
 // #endregion Public API
 
-module.exports = { postProcessWorld }
+function stripMinecraftNamespace (name) {
+  if (!name) return ''
+  return name.startsWith('minecraft:') ? name.slice('minecraft:'.length) : name
+}
+
+function ensureNamespacedName (name) {
+  if (!name) return null
+  return name.includes(':') ? name : `minecraft:${name}`
+}
+
+function normalizeUnifiedProps (props) {
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return {}
+
+  const normalized = {}
+  for (const [key, value] of Object.entries(props)) {
+    if (value === null || value === undefined) continue
+    normalized[key] = String(value)
+  }
+  return normalized
+}
+
+function createPaletteAccumulator () {
+  return {
+    entries: [],
+    keyToIndex: new Map()
+  }
+}
+
+function stableStringify (value) {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+
+  const keys = Object.keys(value).sort()
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+}
+
+function upsertPaletteEntry (acc, entry) {
+  const key = stableStringify(entry)
+  const existing = acc.keyToIndex.get(key)
+  if (existing !== undefined) return existing
+
+  const pid = acc.entries.length
+  acc.entries.push(entry)
+  acc.keyToIndex.set(key, pid)
+  return pid
+}
+
+async function postProcessUnifiedBedrockStructure ({ palette, blocks, targetVersion, logger }) {
+  if (!Array.isArray(palette) || !Array.isArray(blocks) || blocks.length === 0 || !targetVersion) {
+    return {
+      palette,
+      blocks,
+      postProcess: {
+        totalChanged: 0,
+        passes: []
+      }
+    }
+  }
+
+  const Block = prismarineBlock(targetVersion)
+  const World = prismarineWorld(targetVersion)
+  const Chunk = prismarineChunk(targetVersion)
+  const world = new World(() => new Chunk())
+  const positions = []
+
+  for (const [x, y, z, pid] of blocks) {
+    const entry = palette[pid]
+    if (!entry || isAirName(entry.name)) continue
+
+    const pos = new Vec3(x, y, z)
+    let block = null
+    try {
+      block = Block.fromProperties(stripMinecraftNamespace(entry.name), entry.props || {}, 0)
+    } catch (_) {
+      try {
+        block = Block.fromProperties(stripMinecraftNamespace(entry.name), {}, 0)
+      } catch (_inner) {
+        continue
+      }
+    }
+
+    await world.setBlock(pos, block)
+    positions.push(pos)
+  }
+
+  const summary = await postProcessWorld({ world, Block, Vec3, positions, logger })
+  if (summary.totalChanged === 0) {
+    return {
+      palette,
+      blocks,
+      postProcess: summary
+    }
+  }
+
+  const nextPalette = createPaletteAccumulator()
+  const nextBlocks = []
+  for (const [x, y, z, pid] of blocks) {
+    const baseEntry = palette[pid]
+    if (!baseEntry) continue
+
+    const worldBlock = await world.getBlock(new Vec3(x, y, z))
+    const nextEntry = {
+      ...baseEntry,
+      name: ensureNamespacedName(worldBlock?.name || baseEntry.name),
+      props: normalizeUnifiedProps(typeof worldBlock?.getProperties === 'function' ? worldBlock.getProperties() : baseEntry.props)
+    }
+
+    const nextPid = upsertPaletteEntry(nextPalette, nextEntry)
+    nextBlocks.push([x, y, z, nextPid])
+  }
+
+  return {
+    palette: nextPalette.entries,
+    blocks: nextBlocks,
+    postProcess: summary
+  }
+}
+
+module.exports = {
+  postProcessUnifiedBedrockStructure,
+  postProcessWorld
+}
