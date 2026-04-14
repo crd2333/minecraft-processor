@@ -1,90 +1,88 @@
-const { convertBedrockBlock } = require('./bedrock-adapter/convertBlocks')
-const { postProcessWorld } = require('./bedrock-adapter/postProcess')
-const { stripMinecraftNamespace } = require('./structure_parser')
+const { Vec3 } = require('vec3')
 
-function normalizeRenderableBlock (block) {
-  const sourceFormat = block.source?.format || null
-  const rawName = block.namespaceName || block.blockName || ''
+function getStructureSizeVec3 (size) {
+  if (!Array.isArray(size) || size.length !== 3) {
+    return new Vec3(1, 1, 1)
+  }
 
-  if (sourceFormat === 'mcstructure-bedrock') {
-    const converted = convertBedrockBlock(stripMinecraftNamespace(rawName), block.properties || {}, {
-      sourceVersion: block.source?.native?.paletteVersion || null
-    })
+  return new Vec3(
+    Math.max(1, Number(size[0]) || 1),
+    Math.max(1, Number(size[1]) || 1),
+    Math.max(1, Number(size[2]) || 1)
+  )
+}
+
+function normalizePaletteEntry (entry) {
+  if (!entry || typeof entry !== 'object') {
     return {
-      name: converted.name,
-      properties: converted.properties
+      name: 'air',
+      props: {}
     }
   }
 
+  const rawName = typeof entry.name === 'string' ? entry.name : 'minecraft:air'
   return {
-    name: stripMinecraftNamespace(rawName),
-    properties: block.properties || {}
+    name: rawName.startsWith('minecraft:') ? rawName.slice('minecraft:'.length) : rawName,
+    props: entry.props && typeof entry.props === 'object' && !Array.isArray(entry.props) ? entry.props : {}
   }
 }
 
-async function buildWorldFromPayload ({ world, version, payload, Block, Vec3, logger = console }) {
-  if (!payload || !Array.isArray(payload.blocks) || payload.blocks.length === 0) {
+function isAirName (name) {
+  return name === 'air' || name === 'minecraft:air'
+}
+
+async function buildWorldFromUnifiedStructure ({ world, version, unified, Block, logger = console }) {
+  const structureSize = getStructureSizeVec3(unified?.size)
+  const blocks = Array.isArray(unified?.blocks) ? unified.blocks : []
+  const palette = Array.isArray(unified?.palette) ? unified.palette : []
+
+  if (blocks.length === 0) {
     logger.warn('Warning: no non-air blocks found in structure')
     return {
-      size: new Vec3(1, 1, 1),
+      size: structureSize,
       errorPositions: [],
       placedPositions: [],
       originWorldPos: new Vec3(0, 60, 0),
-      axisLength: 5
+      axisLength: Math.max(structureSize.x, structureSize.y, structureSize.z) + 4
     }
   }
 
-  let minX = Infinity
-  let minY = Infinity
-  let minZ = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  let maxZ = -Infinity
-
-  for (const block of payload.blocks) {
-    const { x, y, z } = block.position
-    if (x < minX) minX = x
-    if (y < minY) minY = y
-    if (z < minZ) minZ = z
-    if (x > maxX) maxX = x
-    if (y > maxY) maxY = y
-    if (z > maxZ) maxZ = z
-  }
-
   const yBase = 60
-  const metaOffset = payload.meta?.offset || { x: minX, y: minY, z: minZ }
-  const metaSize = payload.meta?.size || {
-    x: maxX - minX + 1,
-    y: maxY - minY + 1,
-    z: maxZ - minZ + 1
-  }
   const errorPositions = []
   const skippedNames = {}
   const placedPositions = []
 
-  for (const blockRecord of payload.blocks) {
-    const pos = new Vec3(
-      blockRecord.position.x - minX,
-      blockRecord.position.y - minY + yBase,
-      blockRecord.position.z - minZ
-    )
-    const renderable = normalizeRenderableBlock(blockRecord)
+  for (const blockRecord of blocks) {
+    if (!Array.isArray(blockRecord) || blockRecord.length < 4) continue
 
+    const x = Number(blockRecord[0])
+    const y = Number(blockRecord[1])
+    const z = Number(blockRecord[2])
+    const pid = Number(blockRecord[3])
+
+    if (![x, y, z, pid].every(Number.isFinite)) continue
+    if (pid < 0 || pid >= palette.length) continue
+
+    const paletteEntry = normalizePaletteEntry(palette[pid])
+    if (isAirName(paletteEntry.name)) continue
+
+    const pos = new Vec3(x, y + yBase, z)
     let block
+
     try {
-      block = Block.fromProperties(renderable.name, renderable.properties, 0)
+      block = Block.fromProperties(paletteEntry.name, paletteEntry.props, 0)
     } catch (_) {
       try {
-        block = Block.fromProperties(renderable.name, {}, 0)
+        block = Block.fromProperties(paletteEntry.name, {}, 0)
       } catch (_inner) {
-        errorPositions.push({ x: pos.x, y: pos.y, z: pos.z, name: renderable.name })
-        skippedNames[renderable.name] = (skippedNames[renderable.name] || 0) + 1
+        errorPositions.push({ x: pos.x, y: pos.y, z: pos.z, name: paletteEntry.name })
+        skippedNames[paletteEntry.name] = (skippedNames[paletteEntry.name] || 0) + 1
         continue
       }
     }
 
     await world.setBlock(pos, block)
-    placedPositions.push(new Vec3(pos.x, pos.y, pos.z))
+    placedPositions.push(pos)
   }
 
   if (errorPositions.length > 0) {
@@ -94,31 +92,16 @@ async function buildWorldFromPayload ({ world, version, payload, Block, Vec3, lo
     }
   }
 
-  if (payload.meta?.normalizedFormat === 'mcstructure-bedrock') {
-    await postProcessWorld({ world, Block, Vec3, positions: placedPositions, logger })
-  }
-
+  const longestAxis = Math.max(structureSize.x, structureSize.y, structureSize.z)
   return {
-    size: new Vec3(maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1),
+    size: structureSize,
     errorPositions,
     placedPositions,
-    originWorldPos: new Vec3(
-      Number(metaOffset.x || 0) - minX,
-      Number(metaOffset.y || 0) - minY + yBase,
-      Number(metaOffset.z || 0) - minZ
-    ),
-    axisLength: Math.max(
-      Number(metaSize.x || 1),
-      Number(metaSize.y || 1),
-      Number(metaSize.z || 1)
-    ) + Math.max(4, Math.ceil(Math.max(
-      Number(metaSize.x || 1),
-      Number(metaSize.y || 1),
-      Number(metaSize.z || 1)
-    ) * 0.1))
+    originWorldPos: new Vec3(0, yBase, 0),
+    axisLength: longestAxis + Math.max(4, Math.ceil(longestAxis * 0.1))
   }
 }
 
 module.exports = {
-  buildWorldFromPayload
+  buildWorldFromUnifiedStructure
 }

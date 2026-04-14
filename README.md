@@ -49,7 +49,7 @@ Unified parsing is version-targeted canonical Java block-state output only. Voca
 
 `serve_mc.js` is used to show the structure block files in a web browser using key libraries from PrismarineJS. It also provides an API to export the structure block files into pictures and 3D models.
 
-For `.schem/.schematic`, `serve_mc.js` first tries native `prismarine-schematic` parsing for accurate state-id handling. The old generic render-coupled parser fallback has been removed as part of the unified parser cleanup and render will need a later rebuild for broader format support.
+`serve_mc.js` now renders all supported structure formats through the unified parser pipeline. It loads unified `{ meta, size, palette, blocks, entities }` IR for the requested Java version, then builds the Prismarine world directly from canonical Java palette entries.
 
 If serve_mc.js reports missing built assets, run npm run build first.
 

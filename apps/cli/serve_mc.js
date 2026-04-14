@@ -1,17 +1,15 @@
 const path = require('path')
 const fs = require('fs').promises
 const { Vec3 } = require('vec3')
-const { Schematic } = require('prismarine-schematic')
-const { detectStructureFormat } = require('../../src/structure_parser')
-const { buildWorldFromPayload } = require('../../src/world_builder')
+const { detectStructureFormat, loadUnifiedStructure } = require('../../src/structure_parser')
+const { buildWorldFromUnifiedStructure } = require('../../src/world_builder')
 
-const PROJECT_ROOT = path.resolve(__dirname, '../../..')
+const PROJECT_ROOT = path.resolve(__dirname, '../..')
 const THREE_EXPORTERS_DIR = path.join(PROJECT_ROOT, 'node_modules/three/examples/js/exporters')
 const STATIC_DIR = path.join(PROJECT_ROOT, 'static')
 const VIEWER_PUBLIC_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/public')
 const VIEWER_RUNTIME_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/src')
 const GENERATED_DIR = path.join(PROJECT_ROOT, 'data/generated')
-const DEFAULT_PASTE_ORIGIN = new Vec3(0, 60, 0)
 const SUPPORTED_ASSET_EXTENSIONS = new Set(['.schem', '.schematic', '.litematic', '.nbt', '.mcstructure'])
 
 function normalizePathForClient (value) {
@@ -287,6 +285,7 @@ const main = async () => {
   let errorPositions = []
   let structureAxis = null
   let structureOriginWorldPos = null
+  let structureSize = new Vec3(1, 1, 1)
   let boundingBox = null
   let currentInputPath = null
   let currentFormat = null
@@ -299,12 +298,14 @@ const main = async () => {
     errorPositions = []
     structureAxis = null
     structureOriginWorldPos = null
+    structureSize = new Vec3(1, 1, 1)
 
-    const applyPayloadToWorld = async (payload) => {
+    const applyUnifiedToWorld = async (unified) => {
       const Block = require('prismarine-block')(version)
-      const result = await buildWorldFromPayload({ world, version, payload, Block, Vec3, logger: console })
+      const result = await buildWorldFromUnifiedStructure({ world, version, unified, Block, logger: console })
       errorPositions = result.errorPositions
       structureOriginWorldPos = result.originWorldPos
+      structureSize = result.size
       structureAxis = {
         origin: result.originWorldPos,
         length: result.axisLength
@@ -316,33 +317,14 @@ const main = async () => {
       )
     }
 
-    if (format === 'schem' || format === 'schematic') {
-      // Schematic has a native paste() that resolves stateIds correctly
-      try {
-        const schem = await Schematic.read(buffer, version)
-        await schem.paste(world, DEFAULT_PASTE_ORIGIN)
-        structureOriginWorldPos = DEFAULT_PASTE_ORIGIN.plus(schem.offset)
-        const maxSize = Math.max(Number(schem.size.x || 1), Number(schem.size.y || 1), Number(schem.size.z || 1))
-        structureAxis = {
-          origin: {
-            x: Number(schem.offset.x || 0),
-            y: DEFAULT_PASTE_ORIGIN.y + Number(schem.offset.y || 0),
-            z: Number(schem.offset.z || 0)
-          },
-          length: maxSize + Math.max(4, Math.ceil(maxSize * 0.1))
-        }
-        center = centerArg || new Vec3(
-          Math.floor(schem.size.x / 2),
-          60 + Math.floor(schem.size.y / 2),
-          Math.floor(schem.size.z / 2)
-        )
-      } catch (nativeSchemError) {
-        console.warn(`Warning: native schematic parser failed (${nativeSchemError.message || nativeSchemError}). Falling back to generic parser.`)
-        throw new Error(`Native schematic parser failed and generic render fallback has been removed: ${nativeSchemError.message || nativeSchemError}`)
-      }
-    } else {
-      throw new Error('Legacy generic render payload loading has been removed. Rebuild render pipeline against the new unified/native architecture before using this format in serve_mc.js.')
-    }
+    const unified = await loadUnifiedStructure(buffer, format, {
+      version,
+      targetVersion: version,
+      unknownPolicy: 'keep',
+      logger: console
+    })
+
+    await applyUnifiedToWorld(unified)
 
     boundingBox = showBoundingBox
       ? makeBoundingBoxConfig(structureOriginWorldPos, boundingBoxOrigin, boundingBoxSize)
@@ -521,7 +503,7 @@ const main = async () => {
 
   console.log(`Prismarine viewer web server running on *:${currentPort}`)
   console.log(`Structure loaded: ${currentInputPath} (format: ${currentFormat})`)
-  console.log(`Structure size (x,y,z): ${structureAxis.length},${structureAxis.length},${structureAxis.length}`)
+  console.log(`Structure size (x,y,z): ${structureSize.x},${structureSize.y},${structureSize.z}`)
   if (boundingBox) {
     console.log(`Bounding box origin (relative): ${boundingBox.relativeOrigin.x},${boundingBox.relativeOrigin.y},${boundingBox.relativeOrigin.z}`)
     console.log(`Bounding box size: ${boundingBox.size.x},${boundingBox.size.y},${boundingBox.size.z}`)
