@@ -1,6 +1,6 @@
 # Minecraft Processor
 
-A node-based Minecraft data processor. This project utilizes the [Prismarine-viewer](https://github.com/PrismarineJS/prismarine-viewer) library, but reduces unnecessary features. Prismarine-viewer supports Minecraft versions from 1.8 to 1.21.4, so is this project.
+A node-based Minecraft data processor. This project utilizes the [Prismarine-viewer](https://github.com/PrismarineJS/prismarine-viewer) library, but reduces unnecessary features. The local viewer/static asset pipeline in this repository supports Minecraft versions from 1.8 to 1.21.8.
 
 The main goal of this project is to provide a simple and efficient way to process Minecraft data for ML applications. It is able to parse, render, export minecraft structure block files (.schem, .schematic, .litematic, .nbt, .mcstructure) into readable data / pictures / 3D models.
 
@@ -32,7 +32,7 @@ Readable mode rules:
   "meta": {
     "DataVersion": 4189,
     "source": { "format": "mcstructure", "edition": "bedrock", "version": null, "parser": "prismarine-nbt" },
-    "target": { "edition": "java", "version": "1.21.4" },
+    "target": { "edition": "java", "version": "1.21.8" },
     "coordinateSpace": "relative",
     "unknownPolicy": "keep",
     "stats": { "paletteSize": 1, "blockCount": 1, "entityCount": 0, "unresolvedPaletteCount": 0, "unresolvedBlockCount": 0, "droppedBlockCount": 0 }
@@ -60,6 +60,8 @@ Unified parsing is version-targeted canonical Java block-state output only. Voca
 
 `serve_mc.js` is used to show the structure block files in a web browser using key libraries from PrismarineJS. It also provides an API to export the structure block files into pictures and 3D models.
 
+When no `--version` flag is provided, the viewer now defaults to Minecraft Java `1.21.8`.
+
 `serve_mc.js` now renders all supported structure formats through the unified parser pipeline. It loads unified `{ meta, size, palette, blocks, entities }` IR for the requested Java version, then builds the Prismarine world directly from canonical Java palette entries.
 
 If serve_mc.js reports missing built assets, run npm run build first.
@@ -77,10 +79,10 @@ node parse_mc.js assets/xxx.schem --readable --pretty
 node parse_mc.js assets/xxx.schem --readable --filter-air --pretty
 
 # Unified canonical payload
-node parse_mc_unified.js assets/xxx.mcstructure --target-version 1.21.4 --pretty
+node parse_mc_unified.js assets/xxx.mcstructure --target-version 1.21.8 --pretty
 
 # Viewer
-node serve_mc.js assets/xxx.schem --version 1.21.4 --port 3000
+node serve_mc.js assets/xxx.schem --version 1.21.8 --port 3000
 ```
 
 A minimal Python subprocess example is available at `scripts/python_example.py`. It reads unified JSON from `parse_mc_unified.js`.

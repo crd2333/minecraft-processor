@@ -4,6 +4,7 @@ const { Vec3 } = require('vec3')
 const { detectStructureFormat } = require('../../src/structure_parser')
 const { loadUnifiedStructure } = require('../../src/unified_parser')
 const { buildWorldFromUnifiedStructure } = require('../../src/world_builder')
+const { defaultViewerVersion } = require('../../prismarine-viewer-lib/version')
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..')
 const THREE_EXPORTERS_DIR = path.join(PROJECT_ROOT, 'node_modules/three/examples/js/exporters')
@@ -159,7 +160,7 @@ function formatBoundingBoxArgsPreview (boundingBox) {
 const parseArgs = (argv) => {
   const result = {
     positional: [],
-    version: '1.21.4',
+    version: defaultViewerVersion,
     port: 3000,
     viewDistance: 8,
     center: null,

@@ -6,6 +6,12 @@ const path = require('path')
 
 const { detectStructureFormat, loadNativeStructure } = require('../src/structure_parser')
 const { loadUnifiedStructure } = require('../src/unified_parser')
+const { defaultViewerVersion, supportedVersions } = require('../prismarine-viewer-lib/version')
+
+function assertViewerVersionSupport () {
+  assert.strictEqual(defaultViewerVersion, '1.21.8', 'default viewer version must stay on 1.21.8')
+  assert(supportedVersions.includes(defaultViewerVersion), 'default viewer version must be included in supported versions')
+}
 
 function assertNativeContract (native, fixturePath) {
   assert(native && typeof native === 'object', `native parse missing payload for ${fixturePath}`)
@@ -139,7 +145,7 @@ function assertUnknownPolicyBehavior () {
   const unresolved = {
     meta: {
       source: { format: 'mcstructure', edition: 'bedrock', version: null, parser: 'test-parser' },
-      target: { edition: 'java', version: '1.21.4' },
+      target: { edition: 'java', version: '1.21.8' },
       coordinateSpace: 'relative',
       unknownPolicy: 'keep',
       stats: {
@@ -176,19 +182,19 @@ async function runFixture (fixturePath) {
   const format = detectStructureFormat(absolutePath)
   const buffer = await fs.readFile(absolutePath)
 
-  const native = await loadNativeStructure(buffer, format, { version: '1.21.4' }, absolutePath)
+  const native = await loadNativeStructure(buffer, format, { version: defaultViewerVersion }, absolutePath)
   assertNativeContract(native, fixturePath)
 
-  const readableNative = await loadNativeStructure(buffer, format, { version: '1.21.4', readable: true }, absolutePath)
+  const readableNative = await loadNativeStructure(buffer, format, { version: defaultViewerVersion, readable: true }, absolutePath)
   assertNativeReadableContract(readableNative, fixturePath)
 
-  const filteredReadableNative = await loadNativeStructure(buffer, format, { version: '1.21.4', readable: true, filterAir: true }, absolutePath)
+  const filteredReadableNative = await loadNativeStructure(buffer, format, { version: defaultViewerVersion, readable: true, filterAir: true }, absolutePath)
   assertNativeReadableContract(filteredReadableNative, fixturePath)
   assertNativeFilterAirContract(readableNative, filteredReadableNative, fixturePath)
 
   const unified = await loadUnifiedStructure(buffer, format, {
-    version: '1.21.4',
-    targetVersion: '1.21.4',
+    version: defaultViewerVersion,
+    targetVersion: defaultViewerVersion,
     unknownPolicy: 'keep'
   }, absolutePath)
 
@@ -204,16 +210,18 @@ async function runFixture (fixturePath) {
 }
 
 async function main () {
+  assertViewerVersionSupport()
+
   const fixtures = process.argv.slice(2)
   const targets = fixtures.length > 0
     ? fixtures
       : [
-          'assets/1.schem',
-          'assets/School.schematic',
-          'assets/AshleySt131.litematic',
-          'assets/Castillo_de_Loto.litematic',
-          'assets/bedrock.mcstructure',
-          'assets/AshleySt131.nbt'
+          'assets/other/1.schem',
+          'assets/other/School.schematic',
+          'assets/other/AshleySt131.litematic',
+          'assets/other/7_Castillo_de_Loto.litematic',
+          'assets/other/bedrock.mcstructure',
+          'assets/other/AshleySt131.nbt'
         ]
 
   const results = []
