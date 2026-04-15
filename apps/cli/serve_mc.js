@@ -1,7 +1,8 @@
 const path = require('path')
 const fs = require('fs').promises
 const { Vec3 } = require('vec3')
-const { detectStructureFormat, loadUnifiedStructure } = require('../../src/structure_parser')
+const { detectStructureFormat } = require('../../src/structure_parser')
+const { loadUnifiedStructure } = require('../../src/unified_parser')
 const { buildWorldFromUnifiedStructure } = require('../../src/world_builder')
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..')

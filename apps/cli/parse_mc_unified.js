@@ -2,7 +2,8 @@
 
 const fs = require('fs').promises
 const path = require('path')
-const { detectStructureFormat, loadUnifiedStructure } = require('../../src/structure_parser')
+const { detectStructureFormat } = require('../../src/structure_parser')
+const { loadUnifiedStructure } = require('../../src/unified_parser')
 
 process.stdout.on('error', (err) => {
   if (err?.code === 'EPIPE') process.exit(0)

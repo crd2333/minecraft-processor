@@ -12,7 +12,18 @@ npm install
 ```
 
 ## Usage
-`parse_mc.js` is the faithful readable native translator. It reads a structure file and emits a thin descriptive envelope whose `data` field is parser-native readable JSON. For compact NBT-based formats such as `.schematic`, `.schem`, and `.litematic`, the native payload now preserves original simplified source fields while adding format-aware derived inspection views under `data._derivedReadable`. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
+`parse_mc.js` is the native/source-oriented parser. By default it emits the current simplified native payload inside a thin descriptive envelope whose `data` field is parser-native JSON. With `--readable`, it performs faithful in-place translation of opaque native fields only on the native parse path. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
+
+`--filter-air` is an opt-in companion to `--readable` only. It leaves default native behavior unchanged and removes `minecraft:air` entries only from translated readable block collections that already carry explicit index and/or position context.
+
+Readable mode rules:
+
+- default mode stays unchanged;
+- `.schem`: leaves readable fields untouched and decodes `BlockData` in place under `BlockData`;
+- `.litematic`: leaves readable fields untouched and decodes `BlockStates` in place under `BlockStates`;
+- `.schematic`: translates `Blocks`, `AddBlocks`, and `Data` according to their own source semantics and adds the one approved companion field `Blocks_AddBlocks_Data` for their combined readable meaning;
+- `.mcstructure`: leaves readable Bedrock fields untouched and translates `structure.block_indices` in place into readable layer entries;
+- no `_derivedReadable`, `dimensions`, `paletteEntries`, sampling, truncation, or invented helper views are added.
 
 `parse_mc_unified.js` is the canonical ML/data-oriented command. It parses source files directly, applies edition/version mapping only at the unified layer, and outputs the fixed IR:
 
@@ -59,6 +70,12 @@ Example:
 # Native parse
 node parse_mc.js assets/xxx.schem --pretty
 
+# Native parse with readable field decoding
+node parse_mc.js assets/xxx.schem --readable --pretty
+
+# Native parse with readable decoding and air filtering
+node parse_mc.js assets/xxx.schem --readable --filter-air --pretty
+
 # Unified canonical payload
 node parse_mc_unified.js assets/xxx.mcstructure --target-version 1.21.4 --pretty
 
@@ -73,7 +90,7 @@ A minimal Python subprocess example is available at `scripts/python_example.py`.
 
 Shared structure parsing logic now lives under `src/structure_parser.js`: shared format detection, NBT probing, coordinate helpers, and native parse support.
 
-Unified parsing also lives in `src/structure_parser.js`: the same shared module now owns native loading and unified IR construction.
+Unified parsing now lives in `src/unified_parser.js`: the unified command and viewer use this module for canonical `{ meta, size, palette, blocks, entities }` construction, while `src/structure_parser.js` stays source-oriented.
 
 Rendering-specific world population logic lives under `src/world_builder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed.
 

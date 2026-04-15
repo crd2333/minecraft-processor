@@ -4,7 +4,8 @@ const assert = require('assert')
 const fs = require('fs').promises
 const path = require('path')
 
-const { detectStructureFormat, loadNativeStructure, loadUnifiedStructure } = require('../src/structure_parser')
+const { detectStructureFormat, loadNativeStructure } = require('../src/structure_parser')
+const { loadUnifiedStructure } = require('../src/unified_parser')
 
 function assertNativeContract (native, fixturePath) {
   assert(native && typeof native === 'object', `native parse missing payload for ${fixturePath}`)
@@ -15,9 +16,90 @@ function assertNativeContract (native, fixturePath) {
   assert(!Object.prototype.hasOwnProperty.call(native, 'blocks'), `native parse must not expose unified blocks for ${fixturePath}`)
   assert(!Object.prototype.hasOwnProperty.call(native, 'entities'), `native parse must not expose unified entities for ${fixturePath}`)
 
-  if (fixturePath.endsWith('.schem') || fixturePath.endsWith('.schematic') || fixturePath.endsWith('.litematic')) {
-    assert(native.data._derivedReadable, `native parse missing derived readable view for ${fixturePath}`)
-    assert(Array.isArray(native.data._derivedReadable.regions) || native.data._derivedReadable.decodedBlocks || native.data._derivedReadable.primaryLayerBlocks, `native parse derived readable view missing decoded content for ${fixturePath}`)
+  assert(!Object.prototype.hasOwnProperty.call(native.data, '_derivedReadable'), `native parse must not expose derived readable sidecars for ${fixturePath}`)
+}
+
+function assertNativeReadableContract (native, fixturePath) {
+  assert(native && native.data, `readable native parse missing data for ${fixturePath}`)
+  assert(!Object.prototype.hasOwnProperty.call(native.data, '_derivedReadable'), `readable native parse must not expose _derivedReadable for ${fixturePath}`)
+
+  if (fixturePath.endsWith('.schem')) {
+    const data = native.data.Schematic || native.data
+    assert(Array.isArray(data.BlockData), `readable .schem BlockData must stay an array for ${fixturePath}`)
+    assert(data.BlockData.length > 0, `readable .schem BlockData must be populated for ${fixturePath}`)
+    assert(typeof data.BlockData[0] === 'object' && data.BlockData[0] !== null, `readable .schem BlockData entries must be objects for ${fixturePath}`)
+    assert(!Object.prototype.hasOwnProperty.call(data, 'dimensions'), `readable .schem must not add dimensions for ${fixturePath}`)
+    assert(!Object.prototype.hasOwnProperty.call(data, 'paletteEntries'), `readable .schem must not add paletteEntries for ${fixturePath}`)
+  }
+
+  if (fixturePath.endsWith('.schematic')) {
+    const data = native.data.Schematic || native.data
+    assert(Array.isArray(data.Blocks), `readable .schematic Blocks must stay an array for ${fixturePath}`)
+    assert(Array.isArray(data.Data), `readable .schematic Data must stay an array for ${fixturePath}`)
+    assert(Array.isArray(data.Blocks_AddBlocks_Data), `readable .schematic must expose Blocks_AddBlocks_Data for ${fixturePath}`)
+    assert(typeof data.Blocks[0] === 'object' && data.Blocks[0] !== null, `readable .schematic Blocks entries must be objects for ${fixturePath}`)
+    assert(typeof data.Data[0] === 'object' && data.Data[0] !== null, `readable .schematic Data entries must be objects for ${fixturePath}`)
+  }
+
+  if (fixturePath.endsWith('.litematic')) {
+    const region = Object.values(native.data.Regions)[0]
+    assert(region, `readable .litematic must keep at least one region for ${fixturePath}`)
+    assert(Array.isArray(region.BlockStates), `readable .litematic BlockStates must stay an array for ${fixturePath}`)
+    assert(region.BlockStates.length > 0, `readable .litematic BlockStates must be populated for ${fixturePath}`)
+    assert(typeof region.BlockStates[0] === 'object' && region.BlockStates[0] !== null, `readable .litematic BlockStates entries must be objects for ${fixturePath}`)
+  }
+
+  if (fixturePath.endsWith('.mcstructure')) {
+    const layers = native.data?.structure?.block_indices
+    assert(Array.isArray(layers), `readable .mcstructure block_indices must stay an array for ${fixturePath}`)
+    assert(Array.isArray(layers[0]), `readable .mcstructure primary block_indices layer must stay an array for ${fixturePath}`)
+    assert(layers[0].length > 0, `readable .mcstructure primary block_indices layer must be populated for ${fixturePath}`)
+    assert(typeof layers[0][0] === 'object' && layers[0][0] !== null, `readable .mcstructure block_indices entries must be objects for ${fixturePath}`)
+  }
+}
+
+function assertNativeFilterAirContract (unfiltered, filtered, fixturePath) {
+  assert(filtered && filtered.data, `filtered readable native parse missing data for ${fixturePath}`)
+
+  if (fixturePath.endsWith('.schem')) {
+    const unfilteredData = unfiltered.data.Schematic || unfiltered.data
+    const filteredData = filtered.data.Schematic || filtered.data
+    assert(Array.isArray(filteredData.BlockData), `filtered .schem BlockData must stay an array for ${fixturePath}`)
+    assert(filteredData.BlockData.length <= unfilteredData.BlockData.length, `filtered .schem BlockData must not grow for ${fixturePath}`)
+    assert(filteredData.BlockData.every((entry) => !['air', 'minecraft:air'].includes(entry.blockState)), `filtered .schem BlockData must remove air entries for ${fixturePath}`)
+  }
+
+  if (fixturePath.endsWith('.schematic')) {
+    const unfilteredData = unfiltered.data.Schematic || unfiltered.data
+    const filteredData = filtered.data.Schematic || filtered.data
+    assert(Array.isArray(filteredData.Blocks_AddBlocks_Data), `filtered .schematic Blocks_AddBlocks_Data must stay an array for ${fixturePath}`)
+    assert(filteredData.Blocks_AddBlocks_Data.length <= unfilteredData.Blocks_AddBlocks_Data.length, `filtered .schematic Blocks_AddBlocks_Data must not grow for ${fixturePath}`)
+    assert(filteredData.Blocks_AddBlocks_Data.every((entry) => entry.legacyBlockId !== 0), `filtered .schematic Blocks_AddBlocks_Data must remove legacy air entries for ${fixturePath}`)
+  }
+
+  if (fixturePath.endsWith('.litematic')) {
+    const regionNames = Object.keys(filtered.data.Regions)
+    for (const regionName of regionNames) {
+      const unfilteredRegion = unfiltered.data.Regions[regionName]
+      const filteredRegion = filtered.data.Regions[regionName]
+      assert(Array.isArray(filteredRegion.BlockStates), `filtered .litematic BlockStates must stay an array for ${fixturePath}:${regionName}`)
+      assert(filteredRegion.BlockStates.length <= unfilteredRegion.BlockStates.length, `filtered .litematic BlockStates must not grow for ${fixturePath}:${regionName}`)
+      assert(filteredRegion.BlockStates.every((entry) => !['air', 'minecraft:air'].includes(entry.blockState)), `filtered .litematic BlockStates must remove air entries for ${fixturePath}:${regionName}`)
+    }
+  }
+
+  if (fixturePath.endsWith('.mcstructure')) {
+    const unfilteredLayers = unfiltered.data?.structure?.block_indices || []
+    const filteredLayers = filtered.data?.structure?.block_indices || []
+    assert.strictEqual(filteredLayers.length, unfilteredLayers.length, `filtered .mcstructure must keep layer count for ${fixturePath}`)
+    for (let i = 0; i < filteredLayers.length; i++) {
+      const unfilteredLayer = unfilteredLayers[i]
+      const filteredLayer = filteredLayers[i]
+      if (!Array.isArray(unfilteredLayer) || !Array.isArray(filteredLayer)) continue
+      assert(filteredLayer.length <= unfilteredLayer.length, `filtered .mcstructure layer must not grow for ${fixturePath} layer ${i}`)
+      assert(filteredLayer.every((entry) => entry?.block?.name !== 'minecraft:air' && entry?.block?.name !== 'air'), `filtered .mcstructure layer must remove air entries for ${fixturePath} layer ${i}`)
+      assert(filteredLayer.every((entry) => Number.isInteger(entry?.paletteIndex) && entry.paletteIndex >= 0 && entry?.block), `filtered .mcstructure layer must remove no-block sentinel entries for ${fixturePath} layer ${i}`)
+    }
   }
 }
 
@@ -97,6 +179,13 @@ async function runFixture (fixturePath) {
   const native = await loadNativeStructure(buffer, format, { version: '1.21.4' }, absolutePath)
   assertNativeContract(native, fixturePath)
 
+  const readableNative = await loadNativeStructure(buffer, format, { version: '1.21.4', readable: true }, absolutePath)
+  assertNativeReadableContract(readableNative, fixturePath)
+
+  const filteredReadableNative = await loadNativeStructure(buffer, format, { version: '1.21.4', readable: true, filterAir: true }, absolutePath)
+  assertNativeReadableContract(filteredReadableNative, fixturePath)
+  assertNativeFilterAirContract(readableNative, filteredReadableNative, fixturePath)
+
   const unified = await loadUnifiedStructure(buffer, format, {
     version: '1.21.4',
     targetVersion: '1.21.4',
@@ -118,12 +207,14 @@ async function main () {
   const fixtures = process.argv.slice(2)
   const targets = fixtures.length > 0
     ? fixtures
-    : [
-        'assets/1.schem',
-        'assets/AshleySt131.litematic',
-        'assets/bedrock.mcstructure',
-        'assets/AshleySt131.nbt'
-      ]
+      : [
+          'assets/1.schem',
+          'assets/School.schematic',
+          'assets/AshleySt131.litematic',
+          'assets/Castillo_de_Loto.litematic',
+          'assets/bedrock.mcstructure',
+          'assets/AshleySt131.nbt'
+        ]
 
   const results = []
   for (const fixture of targets) {
