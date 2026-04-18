@@ -7,6 +7,9 @@ const { parseBlockName, getStateId } = require('prismarine-schematic/lib/states'
 const { Vec3 } = require('vec3')
 const minecraftData = require('minecraft-data')
 const versions = require('minecraft-data').versions.pc
+const { inferDominantBedrockVersion, inferSingleBedrockVersion } = require('./bedrock-adapter/version')
+
+const DEFAULT_UNIFIED_PARSE_VERSION = '1.21.8'
 
 function detectStructureFormat (inputPath) {
   const ext = path.extname(inputPath).toLowerCase()
@@ -194,6 +197,137 @@ function findMinecraftVersion (dataVersion) {
     if (entry.dataVersion === dataVersion) return entry.minecraftVersion
   }
   return versions[0].minecraftVersion
+}
+
+function maybeResolveMinecraftVersionFromDataVersion (dataVersion) {
+  const numeric = Number(dataVersion)
+  if (!Number.isFinite(numeric)) return null
+
+  for (const entry of versions) {
+    if (entry.dataVersion === numeric) return entry.minecraftVersion
+  }
+
+  return null
+}
+
+function inferJavaDataVersionFromSimplified (simplified, declaredFormat) {
+  const unwrapped = unwrapSchematicRoot(simplified)
+
+  if (declaredFormat === 'schem' || declaredFormat === 'schematic') {
+    return unwrapped?.DataVersion ?? null
+  }
+
+  if (declaredFormat === 'litematic') {
+    return simplified?.MinecraftDataVersion ?? null
+  }
+
+  if (declaredFormat === 'nbt') {
+    if (isLitematicData(simplified)) return simplified?.MinecraftDataVersion ?? null
+    if (isJavaStructureNbt(simplified)) return simplified?.DataVersion ?? null
+    return null
+  }
+
+  return null
+}
+
+function inferBedrockVersionFromSimplified (simplified, declaredFormat) {
+  if (declaredFormat !== 'mcstructure' && declaredFormat !== 'nbt') return null
+  if (!isBedrockMcstructureData(simplified)) return null
+
+  const palette = simplified?.structure?.palette?.default?.block_palette
+  if (!Array.isArray(palette)) return null
+
+  return inferSingleBedrockVersion(palette.map((entry) => entry?.version))
+}
+
+function inferBedrockVersionSelectionFromSimplified (simplified, declaredFormat) {
+  if (declaredFormat !== 'mcstructure' && declaredFormat !== 'nbt') {
+    return { version: null, warning: null }
+  }
+  if (!isBedrockMcstructureData(simplified)) {
+    return { version: null, warning: null }
+  }
+
+  const palette = simplified?.structure?.palette?.default?.block_palette
+  if (!Array.isArray(palette)) {
+    return { version: null, warning: null }
+  }
+
+  const sourceVersions = palette.map((entry) => entry?.version)
+  const singleVersion = inferSingleBedrockVersion(sourceVersions)
+  if (singleVersion) {
+    return { version: singleVersion, warning: null }
+  }
+
+  const dominant = inferDominantBedrockVersion(sourceVersions)
+  if (!dominant.version) {
+    return { version: null, warning: null }
+  }
+
+  if (dominant.mode !== 'mixed') {
+    return { version: dominant.version, warning: null }
+  }
+
+  const countsLabel = dominant.counts
+    .map(({ version, count }) => `${version} (${count})`)
+    .join(', ')
+
+  return {
+    version: dominant.version,
+    warning: `Warning: mixed Bedrock palette versions detected; using most frequent normalized version ${dominant.version} (${countsLabel})`
+  }
+}
+
+async function inferStructureParseVersion (buffer, format) {
+  if (!['schem', 'schematic', 'litematic', 'mcstructure', 'nbt'].includes(format)) return null
+
+  const { simplified } = await parseNbtAuto(buffer)
+  const inferredDataVersion = inferJavaDataVersionFromSimplified(simplified, format)
+  if (inferredDataVersion !== null && inferredDataVersion !== undefined) {
+    return maybeResolveMinecraftVersionFromDataVersion(inferredDataVersion)
+  }
+
+  return inferBedrockVersionFromSimplified(simplified, format)
+}
+
+async function resolveUnifiedParseVersion (buffer, format, versionHint, options = {}) {
+  const logger = options.logger
+
+  if (versionHint) {
+    return {
+      version: versionHint,
+      source: 'explicit'
+    }
+  }
+
+  const { simplified } = await parseNbtAuto(buffer)
+  const inferredDataVersion = inferJavaDataVersionFromSimplified(simplified, format)
+  if (inferredDataVersion !== null && inferredDataVersion !== undefined) {
+    const inferredVersion = maybeResolveMinecraftVersionFromDataVersion(inferredDataVersion)
+    if (inferredVersion) {
+      return {
+        version: inferredVersion,
+        source: 'inferred'
+      }
+    }
+  }
+
+  const bedrockSelection = inferBedrockVersionSelectionFromSimplified(simplified, format)
+  if (bedrockSelection.warning && logger?.warn) {
+    logger.warn(bedrockSelection.warning)
+  }
+
+  if (bedrockSelection.version) {
+    return {
+      version: bedrockSelection.version,
+      source: 'inferred'
+    }
+  }
+
+  return {
+    version: DEFAULT_UNIFIED_PARSE_VERSION,
+    source: 'default'
+  }
 }
 
 function decodeVarintArray (values) {
@@ -644,9 +778,13 @@ module.exports = {
   classifyNativeNbtSchema,
   decodePackedLitematicStates,
   detectStructureFormat,
+  DEFAULT_UNIFIED_PARSE_VERSION,
+  inferStructureParseVersion,
+  inferBedrockVersionSelectionFromSimplified,
   isAirName,
   litematicAxisMinAndSize,
   normalizePosition,
+  resolveUnifiedParseVersion,
   parseNbtAuto,
   positionFromIndexYZX,
   positionFromIndexZYX,

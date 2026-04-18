@@ -13,6 +13,7 @@ const {
   positionFromIndexYZX,
   positionFromIndexZYX,
   readSchematicWithFallback,
+  resolveUnifiedParseVersion,
   stripMinecraftNamespace
 } = require('./structure_parser')
 
@@ -300,7 +301,7 @@ function parseUnifiedMcstructure (simplified, format, options) {
   const builder = createUnifiedBuilder({
     sourceFormat: format,
     sourceEdition: 'bedrock',
-    sourceVersion: simplified.format_version ?? null,
+    sourceVersion: options.version || simplified.format_version || null,
     parser: 'prismarine-nbt',
     sourceDataVersion: null,
     targetVersion: options.targetVersion || null,
@@ -323,7 +324,7 @@ function parseUnifiedMcstructure (simplified, format, options) {
       canonical: canonicalFromBedrockBlock({
         name: blockName,
         props: paletteEntry.states || {},
-        sourceVersion: paletteEntry.version ?? null
+        sourceVersion: options.version || paletteEntry.version || null
       })
     })
   }
@@ -428,6 +429,7 @@ function parseUnifiedLitematic (simplified, format, options) {
 async function loadUnifiedStructure (buffer, format, options = {}) {
   const normalizedOptions = {
     version: options.version,
+    normVersion: options.normVersion || null,
     targetVersion: options.targetVersion || null,
     unknownPolicy: options.unknownPolicy || 'keep',
     logger: options.logger
@@ -436,6 +438,15 @@ async function loadUnifiedStructure (buffer, format, options = {}) {
   if (!['keep', 'drop'].includes(normalizedOptions.unknownPolicy)) {
     throw new Error('Invalid unknown policy. Expected keep or drop')
   }
+
+  if (normalizedOptions.normVersion) {
+    throw new Error(`Not implemented: palette normalization to ${normalizedOptions.normVersion}`)
+  }
+
+  const parseVersionSelection = await resolveUnifiedParseVersion(buffer, format, normalizedOptions.version, {
+    logger: normalizedOptions.logger
+  })
+  normalizedOptions.version = parseVersionSelection.version
 
   if (format === 'schem' || format === 'schematic') {
     return parseUnifiedSchematicLike(buffer, format, normalizedOptions)

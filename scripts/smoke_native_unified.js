@@ -4,9 +4,17 @@ const assert = require('assert')
 const fs = require('fs').promises
 const path = require('path')
 
-const { detectStructureFormat, loadNativeStructure } = require('../src/structure_parser')
+const {
+  DEFAULT_UNIFIED_PARSE_VERSION,
+  detectStructureFormat,
+  inferBedrockVersionSelectionFromSimplified,
+  loadNativeStructure,
+  parseNbtAuto,
+  resolveUnifiedParseVersion
+} = require('../src/structure_parser')
 const { loadUnifiedStructure } = require('../src/unified_parser')
 const { defaultViewerVersion, supportedVersions } = require('../prismarine-viewer-lib/version')
+const nbt = require('prismarine-nbt')
 
 function assertViewerVersionSupport () {
   assert.strictEqual(defaultViewerVersion, '1.21.8', 'default viewer version must stay on 1.21.8')
@@ -209,6 +217,102 @@ async function runFixture (fixturePath) {
   }
 }
 
+async function assertUnifiedVersionSelection () {
+  const inferredCases = [
+    { fixturePath: 'assets/other/1.schem', expectedVersion: '1.20.1' },
+    { fixturePath: 'assets/other/AshleySt131.litematic', expectedVersion: '1.21.1' },
+    { fixturePath: 'assets/other/AshleySt131.nbt', expectedVersion: '1.19' },
+    { fixturePath: 'assets/other/bedrock.mcstructure', expectedVersion: '1.21.60' }
+  ]
+
+  for (const { fixturePath, expectedVersion } of inferredCases) {
+    const absolutePath = path.resolve(process.cwd(), fixturePath)
+    const format = detectStructureFormat(absolutePath)
+    const buffer = await fs.readFile(absolutePath)
+    const selected = await resolveUnifiedParseVersion(buffer, format)
+    assert.deepStrictEqual(selected, { version: expectedVersion, source: 'inferred' }, `version inference mismatch for ${fixturePath}`)
+  }
+
+  const fallbackFixture = path.resolve(process.cwd(), 'assets/other/School.schematic')
+  const fallbackFormat = detectStructureFormat(fallbackFixture)
+  const fallbackBuffer = await fs.readFile(fallbackFixture)
+  const fallbackSelected = await resolveUnifiedParseVersion(fallbackBuffer, fallbackFormat)
+  assert.deepStrictEqual(fallbackSelected, { version: DEFAULT_UNIFIED_PARSE_VERSION, source: 'default' }, 'default unified parse version fallback mismatch')
+
+  const explicitSelected = await resolveUnifiedParseVersion(fallbackBuffer, fallbackFormat, '1.18.2')
+  assert.deepStrictEqual(explicitSelected, { version: '1.18.2', source: 'explicit' }, 'explicit unified parse version override mismatch')
+}
+
+async function assertNormVersionNotImplemented () {
+  const fixturePath = path.resolve(process.cwd(), 'assets/other/1.schem')
+  const format = detectStructureFormat(fixturePath)
+  const buffer = await fs.readFile(fixturePath)
+
+  await assert.rejects(
+    () => loadUnifiedStructure(buffer, format, {
+      targetVersion: defaultViewerVersion,
+      normVersion: '1.20.4',
+      unknownPolicy: 'keep'
+    }),
+    /Not implemented: palette normalization to 1\.20\.4/
+  )
+}
+
+async function assertMcstructureUsesInferredVersionForConversion () {
+  const fixturePath = path.resolve(process.cwd(), 'assets/other/bedrock.mcstructure')
+  const format = detectStructureFormat(fixturePath)
+  const buffer = await fs.readFile(fixturePath)
+
+  const unified = await loadUnifiedStructure(buffer, format, {
+    targetVersion: defaultViewerVersion,
+    unknownPolicy: 'keep'
+  })
+
+  assert.strictEqual(unified.meta?.source?.format, 'mcstructure', 'mcstructure source format must stay explicit')
+  assert.strictEqual(unified.meta?.source?.version, '1.21.60', 'mcstructure should expose inferred single source version')
+  assert(unified.palette.some((entry) => entry?.mapping?.sourceKey), 'mcstructure unified palette should keep Bedrock mapping diagnostics')
+}
+
+async function assertMixedMcstructureVersionUsesDominantVersionAndWarns () {
+  const fixturePath = path.resolve(process.cwd(), 'assets/other/bedrock.mcstructure')
+  const format = detectStructureFormat(fixturePath)
+  const buffer = await fs.readFile(fixturePath)
+  const { parsed, type } = await nbt.parse(buffer, 'little')
+
+  const blockPalette = parsed.value?.structure?.value?.palette?.value?.default?.value?.block_palette?.value?.value
+  assert(Array.isArray(blockPalette) && blockPalette.length >= 3, 'bedrock.mcstructure must expose enough palette entries for mixed-version smoke coverage')
+
+  blockPalette[0].version.value = 17825808
+  blockPalette[1].version.value = 17825808
+
+  const mixedBuffer = nbt.writeUncompressed(parsed, type)
+  const { simplified } = await parseNbtAuto(mixedBuffer)
+  const selection = inferBedrockVersionSelectionFromSimplified(simplified, format)
+  assert.strictEqual(selection.version, '1.21.60', 'mixed mcstructure version inference should use dominant normalized version')
+  assert(selection.warning && /mixed Bedrock palette versions detected/.test(selection.warning), 'mixed mcstructure version inference should report a warning')
+  assert(/1\.21\.60/.test(selection.warning), 'mixed mcstructure warning should name the chosen dominant version')
+  assert(/1\.16\.220/.test(selection.warning), 'mixed mcstructure warning should summarize minority versions')
+
+  const warnings = []
+  const resolved = await resolveUnifiedParseVersion(mixedBuffer, format, undefined, {
+    logger: {
+      warn: (message) => warnings.push(message)
+    }
+  })
+  assert.deepStrictEqual(resolved, { version: '1.21.60', source: 'inferred' }, 'mixed mcstructure resolveUnifiedParseVersion should keep inferred source semantics')
+  assert.strictEqual(warnings.length, 1, 'mixed mcstructure version resolution should emit exactly one warning')
+  assert.strictEqual(warnings[0], selection.warning, 'mixed mcstructure warning should flow through logger.warn unchanged')
+
+  const explicitWarnings = []
+  const explicitResolved = await resolveUnifiedParseVersion(mixedBuffer, format, '1.18.2', {
+    logger: {
+      warn: (message) => explicitWarnings.push(message)
+    }
+  })
+  assert.deepStrictEqual(explicitResolved, { version: '1.18.2', source: 'explicit' }, 'explicit override must still win for mixed mcstructure versions')
+  assert.deepStrictEqual(explicitWarnings, [], 'explicit override should suppress mixed-version warnings')
+}
+
 async function main () {
   assertViewerVersionSupport()
 
@@ -229,6 +333,10 @@ async function main () {
     results.push(await runFixture(fixture))
   }
 
+  await assertUnifiedVersionSelection()
+  await assertNormVersionNotImplemented()
+  await assertMcstructureUsesInferredVersionForConversion()
+  await assertMixedMcstructureVersionUsesDominantVersionAndWarns()
   assertUnknownPolicyBehavior()
 
   console.log(JSON.stringify({ ok: true, results }, null, 2))

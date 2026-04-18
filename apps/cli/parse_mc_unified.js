@@ -2,7 +2,7 @@
 
 const fs = require('fs').promises
 const path = require('path')
-const { detectStructureFormat } = require('../../src/structure_parser')
+const { DEFAULT_UNIFIED_PARSE_VERSION, detectStructureFormat } = require('../../src/structure_parser')
 const { loadUnifiedStructure } = require('../../src/unified_parser')
 
 process.stdout.on('error', (err) => {
@@ -17,7 +17,8 @@ function showUsage () {
     '  node parse_mc_unified.js <input.{schem|schematic|litematic|nbt|mcstructure}> --target-version <mc-version> [output.json] [options]',
     '',
     'Options:',
-    '  -v, --version <mc-version>        Minecraft version hint for .schem/.schematic parsing (optional)',
+    '  -v, --version <mc-version>        Explicit parse version override (otherwise infer from metadata, else default to 1.21.8)',
+    '      --norm_version <mc-version>   Reserved palette normalization target (currently errors as not implemented)',
     '      --target-version <mc-version> Canonical Java target version',
     '      --unknown-policy <mode>       keep | drop (default: keep)',
     '      --stdout                      Write JSON to stdout instead of a file',
@@ -34,6 +35,7 @@ function parseArgs (argv) {
   const result = {
     positional: [],
     version: undefined,
+    normVersion: undefined,
     targetVersion: undefined,
     unknownPolicy: 'keep',
     stdout: false,
@@ -60,6 +62,14 @@ function parseArgs (argv) {
       const value = argv[i + 1]
       if (!value) throw new Error('Missing value for --target-version')
       result.targetVersion = value
+      i++
+      continue
+    }
+
+    if (arg === '--norm_version') {
+      const value = argv[i + 1]
+      if (!value) throw new Error('Missing value for --norm_version')
+      result.normVersion = value
       i++
       continue
     }
@@ -121,6 +131,7 @@ async function main () {
 
   const output = await loadUnifiedStructure(buffer, format, {
     version: args.version,
+    normVersion: args.normVersion,
     targetVersion,
     unknownPolicy: args.unknownPolicy
   }, inputPath)
@@ -137,6 +148,7 @@ async function main () {
 
   console.log(`Parsed ${inputPath}`)
   console.log(`Detected format: ${format}`)
+  console.log(`Unified parse version: ${output.meta?.source?.version || args.version || DEFAULT_UNIFIED_PARSE_VERSION} (explicit --version overrides metadata; default fallback ${DEFAULT_UNIFIED_PARSE_VERSION})`)
   console.log(`Unified target: java ${output.meta?.target?.version || 'unknown'}`)
   console.log(`Blocks: ${output.meta?.stats?.blockCount || 0}, palette: ${output.meta?.stats?.paletteSize || 0}, unresolved: ${output.meta?.stats?.unresolvedBlockCount || 0}, dropped: ${output.meta?.stats?.droppedBlockCount || 0}`)
   console.log(`Wrote JSON to ${outputPath}`)
