@@ -98,6 +98,90 @@ const elemFaces = {
   }
 }
 
+const faceByDir = {
+  '0,1,0': 'up',
+  '0,-1,0': 'down',
+  '1,0,0': 'east',
+  '-1,0,0': 'west',
+  '0,0,-1': 'north',
+  '0,0,1': 'south'
+}
+
+const oppositeFace = {
+  up: 'down',
+  down: 'up',
+  east: 'west',
+  west: 'east',
+  north: 'south',
+  south: 'north'
+}
+
+function axisForFace (face) {
+  if (face === 'east' || face === 'west') return 0
+  if (face === 'up' || face === 'down') return 1
+  return 2
+}
+
+function faceCoordinate (face) {
+  return face === 'east' || face === 'up' || face === 'south' ? 16 : 0
+}
+
+function elementCoversWholeFace (element, face) {
+  if (!element || element.rotation) return false
+
+  const axis = axisForFace(face)
+  if (element.from[axis] !== faceCoordinate(face) || element.to[axis] !== faceCoordinate(face)) return false
+
+  for (let i = 0; i < 3; i++) {
+    if (i === axis) continue
+    if (element.from[i] > 0 || element.to[i] < 16) return false
+  }
+
+  return true
+}
+
+function blockModelHasFullFace (block, face, blockStates) {
+  if (!block || !block.isCube) return false
+  if (!face) return false
+
+  if (block.variant === undefined) {
+    block.variant = getModelVariants(block, blockStates)
+  }
+
+  for (const variant of block.variant) {
+    const elements = variant && variant.model && variant.model.elements
+    if (!elements) continue
+    for (const element of elements) {
+      // A neighboring block only hides this face when its rendered model presents
+      // an opaque full square directly against the shared side. Collision-box
+      // cube-ness alone is too broad for generated/variant models and can drop
+      // faces beside blocks that do not visually close the side.
+      if (elementCoversWholeFace(element, face) && element.faces && element.faces[face]) return true
+    }
+  }
+
+  return false
+}
+
+function blockModelOccludesFace (block, face, blockStates) {
+  if (!block || block.transparent) return false
+  return blockModelHasFullFace(block, face, blockStates)
+}
+
+function shouldCullBlockFace (neighbor, dir, blockStates, options = {}) {
+  if (!neighbor) return false
+  if (neighbor.position.y < 0) return false
+
+  const neighborFace = oppositeFace[faceByDir[dir.join(',')]]
+  if (!neighborFace) return false
+
+  if (options.cullIfIdentical && neighbor.type === options.block.type) {
+    return blockModelHasFullFace(neighbor, neighborFace, blockStates)
+  }
+
+  return blockModelOccludesFace(neighbor, neighborFace, blockStates)
+}
+
 function getLiquidRenderHeight (world, block, type) {
   if (!block || block.type !== type) return 1 / 9
   if (block.metadata === 0) { // source block
@@ -229,7 +313,7 @@ function buildRotationMatrix (axis, degree) {
   return matrix
 }
 
-function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome, blockStateId) {
+function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome, blockStateId, blockStates) {
   const cullIfIdentical = block.name.indexOf('glass') >= 0
 
   for (const face in element.faces) {
@@ -239,10 +323,7 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
 
     if (eFace.cullface) {
       const neighbor = world.getBlock(cursor.plus(new Vec3(...dir)))
-      if (!neighbor) continue
-      if (cullIfIdentical && neighbor.type === block.type) continue
-      if (!neighbor.transparent && neighbor.isCube) continue
-      if (neighbor.position.y < 0) continue
+      if (shouldCullBlockFace(neighbor, dir, blockStates, { cullIfIdentical, block })) continue
     }
 
     const minx = element.from[0]
@@ -424,7 +505,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
             }
 
             for (const element of variant.model.elements) {
-              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome, blockStateId)
+              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome, blockStateId, blocksStates)
             }
           }
         }
