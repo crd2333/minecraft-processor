@@ -232,7 +232,7 @@
 
     function loadMcMappings () {
       if (cachedMcMappings) return Promise.resolve(cachedMcMappings)
-      return fetch('/generated/mc_mappings.json')
+      return fetch('/mc_mappings.json')
         .then(function (res) { return res.text() })
         .then(function (text) {
           // mc_mappings.json may have comments, strip all single-line comments

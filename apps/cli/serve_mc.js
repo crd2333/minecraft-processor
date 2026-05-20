@@ -11,7 +11,6 @@ const THREE_EXPORTERS_DIR = path.join(PROJECT_ROOT, 'node_modules/three/examples
 const STATIC_DIR = path.join(PROJECT_ROOT, 'static')
 const VIEWER_PUBLIC_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/public')
 const VIEWER_RUNTIME_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/src')
-const GENERATED_DIR = path.join(PROJECT_ROOT, 'data/generated')
 const SUPPORTED_ASSET_EXTENSIONS = new Set(['.schem', '.schematic', '.litematic', '.nbt', '.mcstructure'])
 
 function normalizePathForClient (value) {
@@ -361,7 +360,6 @@ const main = async () => {
 
   app.use(compression())
   app.use('/', express.static(STATIC_DIR))
-  app.use('/generated', express.static(GENERATED_DIR))
 
   app.get('/api/assets', async (req, res) => {
     try {

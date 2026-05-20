@@ -5,6 +5,10 @@ const path = require('path')
 const { DEFAULT_UNIFIED_PARSE_VERSION, detectStructureFormat } = require('../../src/structure_parser')
 const { loadUnifiedStructure } = require('../../src/unified_parser')
 
+const PROJECT_ROOT = path.resolve(__dirname, '../..')
+const MC_MAPPINGS_PATH = path.join(PROJECT_ROOT, 'static', 'mc_mappings.json')
+const FALLBACK_SOLID_COLOR = '#ff00ff'
+
 process.stdout.on('error', (err) => {
   if (err?.code === 'EPIPE') process.exit(0)
   throw err
@@ -21,6 +25,7 @@ function showUsage () {
     '      --norm_version <mc-version>   Reserved palette normalization target (currently errors as not implemented)',
     '      --target-version <mc-version> Canonical Java target version',
     '      --unknown-policy <mode>       keep | drop (default: keep)',
+    '      --solid_color                 Add per-palette solid_color from static/mc_mappings.json',
     '      --stdout                      Write JSON to stdout instead of a file',
     '      --pretty                      Pretty-print JSON output',
     '  -h, --help                        Show this help',
@@ -39,7 +44,8 @@ function parseArgs (argv) {
     targetVersion: undefined,
     unknownPolicy: 'keep',
     stdout: false,
-    pretty: false
+    pretty: false,
+    solidColor: false
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -95,6 +101,11 @@ function parseArgs (argv) {
       continue
     }
 
+    if (arg === '--solid_color') {
+      result.solidColor = true
+      continue
+    }
+
     result.positional.push(arg)
   }
 
@@ -104,6 +115,54 @@ function parseArgs (argv) {
 function resolveOutputPath (inputPath, outputPathArg) {
   if (outputPathArg) return path.resolve(process.cwd(), outputPathArg)
   return path.resolve(process.cwd(), `${path.basename(inputPath)}.unified.json`)
+}
+
+function normalizeBlockName (value) {
+  return String(value || '').trim().toLowerCase().replace(/-/g, '_')
+}
+
+async function attachSolidColors (output) {
+  const text = await fs.readFile(MC_MAPPINGS_PATH, 'utf8')
+  const mappings = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ''))
+  const colorMap = new Map()
+
+  for (const [key, entry] of Object.entries(mappings)) {
+    if (!entry?.color) continue
+
+    const solidColor = {
+      color: entry.color,
+      alpha: typeof entry.alpha === 'number' ? entry.alpha : 1,
+      is_full_block: typeof entry.is_full_block === 'boolean' ? entry.is_full_block : true,
+      mapped: true
+    }
+    const aliases = [key, ...key.split('__')]
+    if (key.startsWith('minecraft:')) aliases.push(key.slice('minecraft:'.length))
+
+    for (const alias of aliases) {
+      const normalized = normalizeBlockName(alias)
+      if (normalized && !colorMap.has(normalized)) colorMap.set(normalized, solidColor)
+    }
+  }
+
+  output.palette = output.palette.map((entry) => {
+    const name = normalizeBlockName(entry.name)
+    const solidColor = colorMap.get(name) || colorMap.get(name.replace(/^minecraft:/, '')) || {
+      color: FALLBACK_SOLID_COLOR,
+      alpha: 1,
+      is_full_block: true,
+      mapped: false
+    }
+
+    return { ...entry, solid_color: solidColor }
+  })
+
+  output.meta = {
+    ...output.meta,
+    solidColor: {
+      source: 'static/mc_mappings.json',
+      fallback: FALLBACK_SOLID_COLOR
+    }
+  }
 }
 
 async function main () {
@@ -135,6 +194,10 @@ async function main () {
     targetVersion,
     unknownPolicy: args.unknownPolicy
   }, inputPath)
+
+  if (args.solidColor) {
+    await attachSolidColors(output)
+  }
 
   const json = JSON.stringify(output, null, args.pretty ? 2 : 0)
 

@@ -1,168 +1,310 @@
 # Minecraft Processor
 
-A node-based Minecraft data processor. This project utilizes the [Prismarine-viewer](https://github.com/PrismarineJS/prismarine-viewer) library, but reduces unnecessary features. The local viewer/static asset pipeline in this repository supports Minecraft versions from 1.8 to 1.21.8.
+Minecraft Processor is a Node.js toolchain for Minecraft structure files. It provides three core capabilities:
 
-The main goal of this project is to provide a simple and efficient way to process Minecraft data for ML applications. It is able to parse, render, export minecraft structure block files (.schem, .schematic, .litematic, .nbt, .mcstructure) into readable data / pictures / 3D models.
+- parse source files into native/source-oriented JSON,
+- convert them into a canonical unified IR for ML/data pipelines,
+- render and export structures in a browser viewer.
 
-## Build
-Install dependencies and generate the local rendering assets:
+Supported input formats:
 
-```bash
-npm install
+- `.schem`
+- `.schematic`
+- `.litematic`
+- `.nbt`
+- `.mcstructure`
+
+The repository is centered around three stable root entrypoints:
+
+- `parse_mc.js`
+- `parse_mc_unified.js`
+- `serve_mc.js`
+
+These root files are thin wrappers. Their real implementations live under `apps/cli/`.
+
+## What each command does
+
+### `parse_mc.js`
+
+`parse_mc.js` is the native/source-oriented parser.
+
+It detects the structure format, chooses the appropriate native parser, and emits a thin descriptive envelope whose `data` field contains parser-native JSON.
+
+Output shape:
+
+```json
+{
+  "format": "mcstructure",
+  "schema": "bedrock-mcstructure",
+  "parser": "prismarine-nbt",
+  "data": { "...": "parser-native readable JSON" }
+}
 ```
 
-## Usage
-`parse_mc.js` is the native/source-oriented parser. By default it emits the current simplified native payload inside a thin descriptive envelope whose `data` field is parser-native JSON. With `--readable`, it performs faithful in-place translation of opaque native fields only on the native parse path. It does **not** fabricate a cross-format `{ meta, size, palette, blocks, entities }` shape and should not be treated as unified pipeline stage 1.
+Important notes:
 
-`--filter-air` is an opt-in companion to `--readable` only. It leaves default native behavior unchanged and removes `minecraft:air` entries only from translated readable block collections that already carry explicit index and/or position context.
+- This is **not** the unified pipeline.
+- Default output stays source-oriented.
+- `--readable` decodes opaque native fields in place on the native path.
+- `--filter-air` only works together with `--readable`.
 
-Readable mode rules:
+Use this command when you need source-faithful semantics instead of a cross-format canonical structure.
 
-- default mode stays unchanged;
-- `.schem`: leaves readable fields untouched and decodes `BlockData` in place under `BlockData`;
-- `.litematic`: leaves readable fields untouched and decodes `BlockStates` in place under `BlockStates`;
-- `.schematic`: translates `Blocks`, `AddBlocks`, and `Data` according to their own source semantics and adds the one approved companion field `Blocks_AddBlocks_Data` for their combined readable meaning;
-- `.mcstructure`: leaves readable Bedrock fields untouched and translates `structure.block_indices` in place into readable layer entries;
-- no `_derivedReadable`, `dimensions`, `paletteEntries`, sampling, truncation, or invented helper views are added.
+### `parse_mc_unified.js`
 
-`parse_mc_unified.js` is the canonical ML/data-oriented command. It parses source files directly, applies edition/version mapping only at the unified layer, and outputs the fixed IR:
+`parse_mc_unified.js` is the canonical unified export command.
+
+It parses source files directly, normalizes them into a fixed IR, and outputs canonical Java block-state data for the requested target version.
+
+Output shape:
 
 ```json
 {
   "meta": {
     "DataVersion": 4189,
-    "source": { "format": "mcstructure", "edition": "bedrock", "version": null, "parser": "prismarine-nbt" },
-    "target": { "edition": "java", "version": "1.21.8" },
+    "source": {
+      "format": "mcstructure",
+      "edition": "bedrock",
+      "version": null,
+      "parser": "prismarine-nbt"
+    },
+    "target": {
+      "edition": "java",
+      "version": "1.21.8"
+    },
     "coordinateSpace": "relative",
     "unknownPolicy": "keep",
-    "stats": { "paletteSize": 1, "blockCount": 1, "entityCount": 0, "unresolvedPaletteCount": 0, "unresolvedBlockCount": 0, "droppedBlockCount": 0 }
+    "stats": {
+      "paletteSize": 1,
+      "blockCount": 1,
+      "entityCount": 0,
+      "unresolvedPaletteCount": 0,
+      "unresolvedBlockCount": 0,
+      "droppedBlockCount": 0
+    }
   },
   "size": [1, 1, 1],
-  "palette": [{ "name": "minecraft:stone", "props": {} }],
+  "palette": [
+    {
+      "name": "minecraft:stone",
+      "props": {}
+    }
+  ],
   "blocks": [[0, 0, 0, 0]],
   "entities": []
 }
 ```
 
-Unified palette entries are minimal by default: `{ name, props }`.
+Unified IR facts:
 
-For Bedrock-sourced entries only, the palette may additionally include:
+- `blocks[*]` is `[x, y, z, pid]`
+- `pid` is the palette index
+- palette entries are minimal by default: `{ name, props }`
+- Bedrock-derived palette entries may also include:
+  - `mapping: { status, sourceKey }`
+- `--unknown-policy` currently supports `keep` and `drop`
+- `--solid_color` enriches each palette entry with `solid_color` from `static/mc_mappings.json` for simple single-color voxel consumers
 
-- `mapping`: `{ status, sourceKey }`
+Use this command when downstream consumers need one stable cross-format representation.
 
-`blocks[*][3]` is still the palette id, but `pid` is now implicit from the palette array index and is no longer stored on palette entries.
+### `serve_mc.js`
 
-Unknown handling is explicit via `--unknown-policy keep|drop`.
+`serve_mc.js` starts a local browser viewer.
 
-`parse_mc_ids.js` has been removed by design. Compact numeric vocabulary export is no longer a top-level CLI contract.
+Current runtime flow:
 
-Unified parsing is version-targeted canonical Java block-state output only. Vocabulary/export semantics are no longer part of the unified CLI contract.
+1. read a structure file,
+2. parse it through the unified pipeline,
+3. build a Prismarine world from unified blocks,
+4. start Express + Socket.IO,
+5. serve the viewer page and bundled runtime/static assets.
 
-`serve_mc.js` is used to show the structure block files in a web browser using key libraries from PrismarineJS. It also provides an API to export the structure block files into pictures and 3D models.
+The viewer supports:
 
-When no `--version` flag is provided, the viewer now defaults to Minecraft Java `1.21.8`.
+- structure rendering,
+- asset switching within the same asset directory,
+- screenshot capture,
+- OBJ / STL / GLB export,
+- GBuffer export,
+- bounding-box display and filtering.
 
-`serve_mc.js` now renders all supported structure formats through the unified parser pipeline. It loads unified `{ meta, size, palette, blocks, entities }` IR for the requested Java version, then builds the Prismarine world directly from canonical Java palette entries.
+If `serve_mc.js` reports missing assets, run `npm run build` first.
 
-If serve_mc.js reports missing built assets, run npm run build first.
+## Build
 
-Example:
+Install dependencies:
 
 ```bash
-# Native parse
-node parse_mc.js assets/xxx.schem --pretty
-
-# Native parse with readable field decoding
-node parse_mc.js assets/xxx.schem --readable --pretty
-
-# Native parse with readable decoding and air filtering
-node parse_mc.js assets/xxx.schem --readable --filter-air --pretty
-
-# Unified canonical payload
-node parse_mc_unified.js assets/xxx.mcstructure --target-version 1.21.8 --pretty
-
-# Viewer
-node serve_mc.js assets/xxx.schem --version 1.21.8 --port 3000
+npm install
 ```
 
-A minimal Python subprocess example is available at `scripts/python_example.py`. It reads unified JSON from `parse_mc_unified.js`.
+Build runtime assets required by the browser viewer:
 
-## Code Layout
-`parse_mc.js` and `serve_mc.js` remain stable root entrypoints. `parse_mc_unified.js` is the canonical unified-output command. `parse_mc_ids.js` has been deleted.
+```bash
+npm run build
+```
 
-Shared structure parsing logic now lives under `src/structure_parser.js`: shared format detection, NBT probing, coordinate helpers, and native parse support.
+What `npm run build` does:
 
-Unified parsing now lives in `src/unified_parser.js`: the unified command and viewer use this module for canonical `{ meta, size, palette, blocks, entities }` construction, while `src/structure_parser.js` stays source-oriented.
+- `npm run build:assets` generates browser/runtime assets
+- `npm run build:client` bundles frontend viewer scripts into `static/`
 
-Rendering-specific world population logic lives under `src/world_builder.js`: converts normalized block payloads into a prismarine world and applies Bedrock post-processing when needed.
+`serve_mc.js` depends on built output and runtime static lookup assets under `static/`.
 
-The browser page is no longer embedded in `serve_mc.js`. Frontend source files now live under `apps/frontend/viewer/` (`public/viewer.html`, `src/preload/viewer-preload.js`, `src/hooks/viewer-hooks.js`), while webpack outputs runtime bundles to `static/`.
+Viewer asset notes:
 
-Vendored Prismarine viewer code remains isolated under `prismarine-viewer-lib/`.
+- `prismarine-viewer-lib/` is vendored third-party viewer code with local patches for this repository.
+- `static/` contains built browser assets derived from the viewer/frontend sources.
+- When changing viewer runtime code under `prismarine-viewer-lib/` or `apps/frontend/viewer/`, rebuild with `npm run build` so `static/` stays in sync.
+- Prefer editing source files, not `static/*`, unless you are intentionally checking in regenerated build output.
 
-## Packages Fix/Modification
-1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
-2. Added depth map and segmentation map rendering support (modifications to vendored PrismarineJS viewer):
-   - `prismarine-viewer-lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
-   - `prismarine-viewer-lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
-   - `prismarine-viewer-lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
+## Usage
 
-## Depth Map & Segmentation Map
+### Native parse
 
-The viewer can capture three special render passes from the current camera view:
+```bash
+node parse_mc.js assets/<file> --stdout --pretty
+```
 
-- **Depth Map** (`depth_map.png`): Linear grayscale depth. `d = (viewDepth - near) / (far - near)`, black = near, white = far.
-- **Segmentation ID Map** (`segmentation_id.png`): Each pixel's RGB encodes the block `stateId` as `R*65536 + G*256 + B`. Background/air is black `(0,0,0)`. This provides a unique mapping per block state.
-- **Segmentation Color Map** (`segmentation_color.png`): Each pixel uses a human-readable color from `data/generated/mc_mappings.json` (served at `/generated/mc_mappings.json`) based on block type. Multiple block types may share the same color.
+Readable native parse:
 
-**Capture All + Meta** downloads all three images plus a `capture_metadata.json` containing:
-- Camera near/far planes for depth reconstruction
-- Complete stateId → block name + RGB encoding table
-- Color mapping reference from mc_mappings
+```bash
+node parse_mc.js assets/<file> --readable --stdout --pretty
+```
 
-All three maps preserve the actual block geometry (flowers render as cross-planes, slabs as half-blocks, stairs as stepped shapes, etc.) because the rendering uses the same vertex geometry as the normal textured view — only the material/shader is swapped during capture.
+Readable native parse with air filtering:
 
-## GBuffer Export (current)
+```bash
+node parse_mc.js assets/<file> --readable --filter-air --stdout --pretty
+```
 
-The viewer panel now exposes a single button:
+### Unified parse
 
-- **Render GBuffer (.bin)**
-- Optional checkbox: **Seg uses mc_mappings color** (unchecked = stateId RGB encoding)
-- Optional checkbox: **Force square render** and size input (default 512)
-- Optional checkbox: **Show square guide** overlays a visible square crop guide in the viewer
+```bash
+node parse_mc_unified.js assets/<file> --target-version 1.21.8 --stdout --pretty
+```
 
-Output file: `gbuffer.bin`
+Drop unresolved Bedrock-derived blocks instead of keeping them:
 
-### Binary layout
+```bash
+node parse_mc_unified.js assets/<file> --target-version 1.21.8 --unknown-policy drop --stdout --pretty
+```
 
-1. Header (16 bytes)
-   - `magic[8] = "MCGBUF01"`
-   - `version (uint32 LE)`
-   - `metadataLength (uint32 LE)`
-2. `metadata` JSON UTF-8 bytes
-3. Raw channel blobs (concatenated):
-   - `rgb`: uint8 RGBA, shape `[H, W, 4]` (includes alpha from texture/material transparency)
-   - `depth`: float16, shape `[H, W]`, **metric depth z** (world units). Background is `+Inf`.
-   - `seg`: uint8 RGBA, shape `[H, W, 4]` (`id` mode or `color` mode)
-   - `mask`: uint8, shape `[H, W]`, value 1 if any fragment exists (opaque/translucent), else 0
+Add per-palette solid colors for downstream single-color voxel renderers:
 
-Depth is already decoded to metric `z` and stored directly as float16.
+```bash
+node parse_mc_unified.js assets/<file> --target-version 1.21.8 --solid_color --stdout --pretty
+```
 
-### Python reader (headless-friendly)
+### Viewer
 
-Use:
+```bash
+node serve_mc.js assets/<file> --version 1.21.8 --port 3000
+```
+
+Optional viewer flags:
+
+- `--view-distance <chunks>`
+- `--center x,y,z`
+- `--bbox-origin x,y,z`
+- `--bbox-size n|x,y,z`
+- `--no-bbox`
+
+## Practical verification commands
+
+The repository currently uses smoke-style verification rather than a mature test suite.
+
+Useful commands:
+
+```bash
+npm run build
+npm test
+npm run lint
+npm run type-check
+node parse_mc.js assets/<file> --stdout --pretty
+node parse_mc_unified.js assets/<file> --target-version 1.21.8 --stdout --pretty
+node serve_mc.js assets/<file> --version 1.21.8 --port 3000
+```
+
+At the moment, `npm test`, `npm run lint`, and `npm run type-check` all run the repository smoke script `scripts/smoke_native_unified.js`.
+
+## Repository layout
+
+```text
+parse_mc.js
+parse_mc_unified.js
+serve_mc.js                     # stable root entrypoints
+
+apps/
+├── cli/                        # real CLI/server implementations
+└── frontend/viewer/            # viewer HTML + browser runtime source
+
+src/
+├── structure_parser.js         # native parsing helpers and format detection
+├── unified_parser.js           # canonical unified IR construction
+├── world_builder.js            # unified IR -> prismarine world placement
+└── bedrock-adapter/            # Bedrock -> Java conversion and post-processing
+
+static/                         # built browser runtime assets and static lookup data such as mc_mappings.json
+prismarine-viewer-lib/          # vendored + locally modified viewer source
+scripts/                        # generators and smoke/helper scripts
+```
+
+## Bedrock handling model
+
+Bedrock handling is intentionally split by layer:
+
+- native parse does **not** convert Bedrock blocks into Java names/states
+- unified parse converts Bedrock palette entries into canonical Java-oriented block-state output when possible
+- unresolved Bedrock mappings stay explicit through `mapping.status === "unresolved"`
+- Bedrock-specific world-context corrections live in `src/bedrock-adapter/postProcess.js`
+
+This separation is important:
+
+- native output stays source-oriented,
+- unified output becomes canonical,
+- render correctness depends on Bedrock post-processing where neighbor context matters.
+
+## Viewer export notes
+
+The viewer exposes screenshot, mesh export, and GBuffer export functionality.
+
+Current GBuffer facts:
+
+- binary magic: `MCGBUF01`
+- file layout: header + metadata JSON + concatenated channel blobs
+- channels include `rgb`, `depth`, `seg`, and `mask`
+- depth stores metric `z` as float16
+- background depth is `+Inf`
+
+Helper reader:
 
 ```bash
 python scripts/read_gbuffer.py gbuffer.bin --save --out gbuffer_out
 ```
 
-This script prints tensor stats and writes `.npy` arrays always. If `imageio` is available, it also writes PNG previews (`rgb.png`, `seg.png`, `mask.png`, `depth_norm.png`) for remote/headless inspection.
+## Notes for contributors
+
+- Keep root entrypoint filenames stable.
+- Do not move heavy logic back into root wrappers.
+- Treat `prismarine-viewer-lib/` as third-party code with local patches.
+- Do not document behavior that the current code does not actually support.
 
 
-## Reference
-Structure files specifications:
-- `.schematic`: `https://minecraft.wiki/w/Schematic_file_format`
-- `.schem`: `https://github.com/SpongePowered/Schematic-Specification/blob/master/versions/schematic-3.md` (and v1, v2)
-- `.litematic`: not found yet, maybe there does not exist such a spec, see `https://github.com/maruohon/litematica/issues/53`
-- `.nbt`: `https://minecraft.wiki/w/Structure_block_file_format` or in Chinese `https://zh.minecraft.wiki/w/%E7%BB%93%E6%9E%84%E5%AD%98%E5%82%A8%E6%A0%BC%E5%BC%8F`
-- `.mcstructure`: `https://wiki.bedrock.dev/nbt/mcstructure` or in Chinese `https://zh.minecraft.wiki/w/%E5%9F%BA%E5%B2%A9%E7%89%88%E7%BB%93%E6%9E%84%E6%96%87%E4%BB%B6`
+## Fix/Modifications for prismarine-viewer-lib
+1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
+2. Added depth map and segmentation map rendering support (modifications to vendored PrismarineJS viewer):
+   - `prismarine-viewer-lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
+   - `prismarine-viewer-lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
+   - `prismarine-viewer-lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
+3. Face Culling fix: replace simple `!neighbor.transparent && neighbor.isCube` logic with a more robust check that also considers block models and partial transparency. This prevents incorrect culling of faces adjacent to non-cube blocks like stairs, fences, etc.
+
+## References
+
+Structure format references:
+
+- `.schematic`: <https://minecraft.wiki/w/Schematic_file_format>
+- `.schem`: <https://github.com/SpongePowered/Schematic-Specification/blob/master/versions/schematic-3.md>
+- `.litematic`: <https://github.com/maruohon/litematica> (no formal spec; see issue [#53](https://github.com/maruohon/litematica/issues/53))
+- `.nbt`: <https://minecraft.wiki/w/Structure_block_file_format>
+- `.mcstructure`: <https://wiki.bedrock.dev/nbt/mcstructure>
