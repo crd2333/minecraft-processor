@@ -1,10 +1,10 @@
 const path = require('path')
-const { makeTextureAtlas } = require('../prismarine-viewer-lib/atlas')
-const { prepareBlocksStates } = require('../prismarine-viewer-lib/modelsBuilder')
+const { makeTextureAtlas } = require('prismarine-viewer/viewer/lib/atlas')
+const { prepareBlocksStates } = require('prismarine-viewer/viewer/lib/modelsBuilder')
 const mcAssets = require('minecraft-assets')
 const fs = require('fs-extra')
 
-const supportedVersions = require('../prismarine-viewer-lib/version').supportedVersions
+const supportedVersions = require('../src/viewer_versions').supportedVersions
 
 function hasAllGeneratedAssets (texturesPath, blockStatesPath) {
   return supportedVersions.every(version => {
@@ -13,8 +13,9 @@ function hasAllGeneratedAssets (texturesPath, blockStatesPath) {
   })
 }
 
-const texturesPath = path.resolve(__dirname, '../static/textures')
-const blockStatesPath = path.resolve(__dirname, '../static/blocksStates')
+const prismarineViewerPublicPath = path.resolve(__dirname, '../static/vendor/packages/prismarine-viewer/public')
+const texturesPath = path.join(prismarineViewerPublicPath, 'textures')
+const blockStatesPath = path.join(prismarineViewerPublicPath, 'blocksStates')
 
 if (!process.argv.includes('-f') && hasAllGeneratedAssets(texturesPath, blockStatesPath)) {
   console.log('textures folder already exists, skipping...')
@@ -30,7 +31,7 @@ for (const version of supportedVersions) {
   const out = fs.createWriteStream(path.resolve(texturesPath, version + '.png'))
   const stream = atlas.canvas.pngStream()
   stream.on('data', (chunk) => out.write(chunk))
-  stream.on('end', () => console.log('Generated textures/' + version + '.png'))
+  stream.on('end', () => console.log('Generated prismarine-viewer/public/textures/' + version + '.png'))
 
   const blocksStates = JSON.stringify(prepareBlocksStates(assets, atlas))
   fs.writeFileSync(path.resolve(blockStatesPath, version + '.json'), blocksStates)

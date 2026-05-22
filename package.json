@@ -9,14 +9,16 @@
     "test": "node scripts/smoke_native_unified.js",
     "lint": "node scripts/smoke_native_unified.js",
     "type-check": "node scripts/smoke_native_unified.js",
-    "build:assets": "node scripts/generate-assets.js",
-    "build:client": "webpack --config webpack.config.js",
-    "build": "npm run build:assets && npm run build:client",
+    "build:vendor-packages": "node scripts/build-vendor.js",
+    "build:viewer-assets": "node scripts/generate-assets.js",
+    "build:client": "node scripts/build-vendor.js --prepare-viewer-only && webpack --config webpack.config.js",
+    "build": "npm run build:vendor-packages && npm run build:viewer-assets && webpack --config webpack.config.js",
     "prepare": "npm run build"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tweenjs/tween.js": "^23.1.1",
     "compression": "^1.7.4",
     "express": "^4.17.1",
     "minecraft-data": "^3.0.0",
@@ -24,19 +26,24 @@
     "prismarine-chunk": "^1.22.0",
     "prismarine-nbt": "^2.7.0",
     "prismarine-schematic": "^1.1.2",
+    "prismarine-viewer": "^1.33.0",
     "prismarine-world": "^3.3.1",
     "socket.io": "^4.0.0",
     "three": "0.128.0",
-    "vec3": "^0.1.7",
-    "@tweenjs/tween.js": "^23.1.1"
+    "vec3": "^0.1.7"
   },
   "devDependencies": {
+    "@rollup/plugin-commonjs": "^29.0.2",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^1.0.0",
     "assert": "^2.1.0",
     "buffer": "^6.0.3",
     "canvas": "^3.1.0",
     "fs-extra": "^11.0.0",
     "minecraft-assets": "^1.9.0",
     "process": "^0.11.10",
+    "rollup": "^4.60.4",
     "webpack": "^5.105.4",
     "webpack-cli": "^6.0.1"
   }

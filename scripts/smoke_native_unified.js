@@ -13,7 +13,7 @@ const {
   resolveUnifiedParseVersion
 } = require('../src/structure_parser')
 const { loadUnifiedStructure } = require('../src/unified_parser')
-const { defaultViewerVersion, supportedVersions } = require('../prismarine-viewer-lib/version')
+const { defaultViewerVersion, supportedVersions } = require('../src/viewer_versions')
 const nbt = require('prismarine-nbt')
 
 function assertViewerVersionSupport () {

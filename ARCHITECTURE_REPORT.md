@@ -81,11 +81,11 @@ viewer 前端源码，**不是 React/Vue SPA**，是 DOM 驱动的 Three.js 渲�
 
 ### 4.4 `static/`
 
-webpack 构建的浏览器 bundle、worker、纹理、blockStates，以及浏览器/CLI 可直接读取的静态查找数据（例如 `mc_mappings.json`）。viewer 启动时会检查这些产物是否存在。
+webpack 构建的浏览器应用 bundle、vendor 包产物、viewer 纹理/blockStates，以及浏览器/CLI 可直接读取的静态查找数据（例如 `mc_mappings.json`）。viewer 启动时会检查这些产物是否存在。
 
-### 4.5 `prismarine-viewer-lib/`
+### 4.5 `patches/prismarine-viewer/`
 
-vendored 且做过本地修改的 Prismarine viewer 代码。既不是原版上游镜像，也不是普通业务模块——升级或同步上游时要谨慎。
+应用到 npm 包 `prismarine-viewer` 的本地 overlay patch。构建时先复制 npm 包到 `.build/vendor-packages/prismarine-viewer`，再用这些 patch 覆盖对应文件，然后打包到 `static/vendor/packages/prismarine-viewer/`。
 
 ---
 
@@ -147,7 +147,7 @@ Bedrock 处理分三层，这个分层很重要，不要合并：
 ## 8. 构建与验证
 
 ```bash
-npm run build          # build:assets + build:client
+npm run build          # build:vendor-packages + build:viewer-assets + webpack
 npm test               # smoke 脚本（test/lint/type-check 目前指向同一个脚本）
 ```
 
@@ -171,7 +171,7 @@ viewer 运行依赖 `static/`，资产缺失时先跑 `npm run build`。
 
 1. 根入口文件名是公共契约，不要改名
 2. 先看当前代码再下结论，不要从旧文档反推行为
-3. `prismarine-viewer-lib/` 是 vendored + 本地 patch，升级要谨慎
+3. `patches/prismarine-viewer/` 是 npm `prismarine-viewer` 的本地 patch set，升级要谨慎
 4. Bedrock 处理分层完成，不要把所有修正塞进同一阶段
 5. 这不是典型 Web 全栈项目，不要套 controller/service/database 思维
 

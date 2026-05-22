@@ -146,16 +146,31 @@ npm run build
 
 What `npm run build` does:
 
-- `npm run build:assets` generates browser/runtime assets
-- `npm run build:client` bundles frontend viewer scripts into `static/`
+- `npm run build:vendor-packages` builds/copies runtime vendor package payloads into `static/vendor/`
+- `npm run build:viewer-assets` generates Prismarine viewer textures/block-state assets into `static/vendor/packages/prismarine-viewer/public/`
+- Webpack bundles the application viewer runtime into `static/index.js` and the Prismarine viewer worker runtime into `static/vendor/packages/prismarine-viewer/public/worker.js`
 
 `serve_mc.js` depends on built output and runtime static lookup assets under `static/`.
 
+### Prebuilt runtime vendor assets
+
+The release-oriented vendor layout lives under `static/vendor/`:
+
+- `static/vendor/manifest.json` maps package specifiers such as `prismarine-block` to prebuilt bundle files.
+- `static/vendor/packages/` contains the Rollup-built runtime packages.
+- `minecraft-data` is split into loader/source files plus versioned `data/` and `schemas/` assets because its data tree is intentionally large and asset-like.
+- `prismarine-viewer` is staged from `node_modules/prismarine-viewer`, patched from `patches/prismarine-viewer/`, bundled into `static/vendor/packages/prismarine-viewer/`, and stores its generated runtime assets under `static/vendor/packages/prismarine-viewer/public/`.
+- server runtime packages used by `serve_mc.js`, including `express`, `compression`, and `socket.io`, are also exposed through the manifest.
+- `static/vendor/three/exporters/` contains the browser exporter scripts served by `/vendor/three/:file`.
+- `static/vendor/manifest.json` records the generated package set.
+
+The root entrypoints activate this manifest automatically when `static/vendor/manifest.json` exists, so a prebuilt release can run without a live project-level `node_modules` directory. Development checkouts can still use normal `node_modules`; the manifest only redirects package names that are explicitly listed in `static/vendor/manifest.json`.
+
 Viewer asset notes:
 
-- `prismarine-viewer-lib/` is vendored third-party viewer code with local patches for this repository.
-- `static/` contains built browser assets derived from the viewer/frontend sources.
-- When changing viewer runtime code under `prismarine-viewer-lib/` or `apps/frontend/viewer/`, rebuild with `npm run build` so `static/` stays in sync.
+- `patches/prismarine-viewer/` contains local overlays applied to the installed `prismarine-viewer` package before bundling.
+- `static/index.js` is the final browser application bundle. The viewer worker bundle lives with the vendored viewer package at `static/vendor/packages/prismarine-viewer/public/worker.js`.
+- When changing viewer runtime code under `patches/prismarine-viewer/` or `apps/frontend/viewer/`, rebuild with `npm run build` so `static/` stays in sync.
 - Prefer editing source files, not `static/*`, unless you are intentionally checking in regenerated build output.
 
 ## Usage
@@ -245,8 +260,8 @@ src/
 ├── world_builder.js            # unified IR -> prismarine world placement
 └── bedrock-adapter/            # Bedrock -> Java conversion and post-processing
 
-static/                         # built browser runtime assets and static lookup data such as mc_mappings.json
-prismarine-viewer-lib/          # vendored + locally modified viewer source
+static/                         # built browser runtime assets and prebuilt vendor packages
+patches/prismarine-viewer/      # local overlays applied to the npm prismarine-viewer package
 scripts/                        # generators and smoke/helper scripts
 ```
 
@@ -287,16 +302,16 @@ python scripts/read_gbuffer.py gbuffer.bin --save --out gbuffer_out
 
 - Keep root entrypoint filenames stable.
 - Do not move heavy logic back into root wrappers.
-- Treat `prismarine-viewer-lib/` as third-party code with local patches.
+- Treat `patches/prismarine-viewer/` as the local patch set for the npm `prismarine-viewer` package.
 - Do not document behavior that the current code does not actually support.
 
 
-## Fix/Modifications for prismarine-viewer-lib
+## Fix/Modifications for prismarine-viewer
 1. Fix the error of rendering 'stairs' as 'air' in PrismarineJS (caused by `.include('air)` in its `models.js`)
 2. Added depth map and segmentation map rendering support (modifications to vendored PrismarineJS viewer):
-   - `prismarine-viewer-lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
-   - `prismarine-viewer-lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
-   - `prismarine-viewer-lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds three custom `ShaderMaterial`s (depth, segmentation-by-ID, segmentation-by-color) and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
+   - `patches/prismarine-viewer/viewer/lib/models.js`: Extended `getSectionGeometry()` and `renderElement()`/`renderLiquid()` to produce a per-vertex `blockIds` attribute (Float32Array) containing the block stateId for each vertex. Also collects a `stateIdToName` map from stateId to block name strings during geometry generation.
+   - `patches/prismarine-viewer/viewer/lib/worker.js`: Transfers the `blockIds` buffer alongside existing geometry buffers via `postMessage`.
+   - `patches/prismarine-viewer/viewer/lib/worldrenderer.js`: Attaches `blockId` as a vertex attribute on each mesh. Adds custom materials and methods `renderDepthMap()`, `renderSegmentationMap()`, `renderColorSegMap()` that perform off-screen render passes and return raw pixel data. Accumulates `stateIdToName` from all worker messages.
 3. Face Culling fix: replace simple `!neighbor.transparent && neighbor.isCube` logic with a more robust check that also considers block models and partial transparency. This prevents incorrect culling of faces adjacent to non-cube blocks like stairs, fences, etc.
 
 ## References

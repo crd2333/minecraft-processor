@@ -4,11 +4,12 @@ const { Vec3 } = require('vec3')
 const { detectStructureFormat } = require('../../src/structure_parser')
 const { loadUnifiedStructure } = require('../../src/unified_parser')
 const { buildWorldFromUnifiedStructure } = require('../../src/world_builder')
-const { defaultViewerVersion } = require('../../prismarine-viewer-lib/version')
+const { defaultViewerVersion } = require('../../src/viewer_versions')
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..')
-const THREE_EXPORTERS_DIR = path.join(PROJECT_ROOT, 'node_modules/three/examples/js/exporters')
 const STATIC_DIR = path.join(PROJECT_ROOT, 'static')
+const THREE_EXPORTERS_DIR = path.join(STATIC_DIR, 'vendor', 'three', 'exporters')
+const VENDORED_VIEWER_PUBLIC_DIR = path.join(STATIC_DIR, 'vendor', 'packages', 'prismarine-viewer', 'public')
 const VIEWER_PUBLIC_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/public')
 const VIEWER_RUNTIME_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/src')
 const SUPPORTED_ASSET_EXTENSIONS = new Set(['.schem', '.schematic', '.litematic', '.nbt', '.mcstructure'])
@@ -219,9 +220,12 @@ const parseArgs = (argv) => {
 async function ensureBuiltAssets (version) {
   const requiredPaths = [
     path.join(STATIC_DIR, 'index.js'),
-    path.join(STATIC_DIR, 'worker.js'),
-    path.join(STATIC_DIR, 'textures', `${version}.png`),
-    path.join(STATIC_DIR, 'blocksStates', `${version}.json`)
+    path.join(VENDORED_VIEWER_PUBLIC_DIR, 'worker.js'),
+    path.join(VENDORED_VIEWER_PUBLIC_DIR, 'textures', `${version}.png`),
+    path.join(VENDORED_VIEWER_PUBLIC_DIR, 'blocksStates', `${version}.json`),
+    path.join(THREE_EXPORTERS_DIR, 'OBJExporter.js'),
+    path.join(THREE_EXPORTERS_DIR, 'STLExporter.js'),
+    path.join(THREE_EXPORTERS_DIR, 'GLTFExporter.js')
   ]
 
   for (const filePath of requiredPaths) {

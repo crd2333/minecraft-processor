@@ -1,0 +1,47 @@
+{
+  "generatedAt": "2026-05-21T12:05:57.011Z",
+  "layout": "bundle-manifest",
+  "modules": {
+    "minecraft-data": "packages/minecraft-data/index.js",
+    "minecraft-data/data.js": "packages/minecraft-data/data.js",
+    "vec3": "packages/vec3/index.js",
+    "prismarine-nbt": "packages/prismarine-nbt/nbt.js",
+    "prismarine-schematic": "packages/prismarine-schematic/index.js",
+    "prismarine-schematic/lib/spongeSchematic": "packages/prismarine-schematic/lib/spongeSchematic.js",
+    "prismarine-schematic/lib/mceditSchematic": "packages/prismarine-schematic/lib/mceditSchematic.js",
+    "prismarine-schematic/lib/states": "packages/prismarine-schematic/lib/states.js",
+    "prismarine-world": "packages/prismarine-world/index.js",
+    "prismarine-chunk": "packages/prismarine-chunk/index.js",
+    "prismarine-block": "packages/prismarine-block/index.js",
+    "prismarine-registry": "packages/prismarine-registry/index.js",
+    "prismarine-biome": "packages/prismarine-biome/index.js",
+    "prismarine-chat": "packages/prismarine-chat/index.js",
+    "prismarine-item": "packages/prismarine-item/index.js",
+    "prismarine-viewer/viewer/lib/worldrenderer": "packages/prismarine-viewer/viewer/lib/worldrenderer.js",
+    "prismarine-viewer/viewer/lib/worker": "packages/prismarine-viewer/viewer/lib/worker.js",
+    "express": "packages/express/index.js",
+    "compression": "packages/compression/index.js",
+    "socket.io": "packages/socket.io/dist/index.js"
+  },
+  "assets": {
+    "minecraftData": [
+      "packages/minecraft-data/minecraft-data/data",
+      "packages/minecraft-data/minecraft-data/schemas"
+    ],
+    "socketIoClient": "packages/socket.io/client-dist",
+    "prismarineViewer": {
+      "package": "packages/prismarine-viewer",
+      "missingTexture": "packages/prismarine-viewer/viewer/lib/missing_texture.png",
+      "runtimeAssets": [
+        "packages/prismarine-viewer/public/textures",
+        "packages/prismarine-viewer/public/blocksStates"
+      ],
+      "patchSource": "patches/prismarine-viewer"
+    },
+    "threeExporters": [
+      "three/exporters/OBJExporter.js",
+      "three/exporters/STLExporter.js",
+      "three/exporters/GLTFExporter.js"
+    ]
+  }
+}
