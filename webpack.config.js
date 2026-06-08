@@ -11,8 +11,11 @@ function minecraftDataFilter (req, cb) {
   const context = req.context || ''
 
   if (context.includes('minecraft-data') && request.includes('/data/bedrock/')) {
-    cb(null, [])
-    return
+    const isBedrockCommonMetadata = /\/data\/bedrock\/common\/(protocolVersions|versions|legacy)\.json$/.test(request)
+    if (!isBedrockCommonMetadata) {
+      cb(null, [])
+      return
+    }
   }
 
   if (context.includes('minecraft-data') && request.endsWith('.json')) {

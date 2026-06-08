@@ -171,6 +171,10 @@
     }, 1000)
   }
 
+  function downloadJson (payload, filename) {
+    downloadBlob(new Blob([JSON.stringify(payload || {}, null, 2)], { type: 'application/json' }), filename)
+  }
+
   function bindExportButtons () {
     document.getElementById('btn-screenshot').addEventListener('click', function () {
       if (!window.__captureScreenshot) { setStatus('Capture API not ready'); return }
@@ -187,6 +191,9 @@
         document.body.appendChild(anchor)
         anchor.click()
         document.body.removeChild(anchor)
+        if (shot.pixal3d) {
+          downloadJson(shot.pixal3d, 'screenshot.pixal3d.json')
+        }
         setStatus('Screenshot saved (' + shot.width + 'x' + shot.height + ', transparent bg).')
       } catch (error) {
         setStatus('Screenshot failed: ' + error.message)
@@ -333,6 +340,9 @@
             size: renderSize
           })
           downloadBlob(result.blob, 'gbuffer.bin')
+          if (result.metadata && result.metadata.pixal3d) {
+            downloadJson(result.metadata.pixal3d, 'gbuffer.pixal3d.json')
+          }
           setStatus('gbuffer.bin saved (' + segMode + ', ' + (forceSquare ? (renderSize + 'x' + renderSize) : 'canvas size') + ').')
         } catch (error) {
           setStatus('GBuffer render failed: ' + error.message)

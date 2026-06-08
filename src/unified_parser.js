@@ -108,6 +108,53 @@ function finalizeStats (stats, palette, blocks, entities) {
   return stats
 }
 
+function normalizeBlocksToOccupiedBounds (blocks, declaredSize) {
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return {
+      size: declaredSize,
+      offset: [0, 0, 0]
+    }
+  }
+
+  let minX = Infinity
+  let minY = Infinity
+  let minZ = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let maxZ = -Infinity
+
+  for (const block of blocks) {
+    const x = Number(block[0])
+    const y = Number(block[1])
+    const z = Number(block[2])
+    if (![x, y, z].every(Number.isFinite)) continue
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    minZ = Math.min(minZ, z)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+    maxZ = Math.max(maxZ, z)
+  }
+
+  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) {
+    return {
+      size: declaredSize,
+      offset: [0, 0, 0]
+    }
+  }
+
+  for (const block of blocks) {
+    block[0] -= minX
+    block[1] -= minY
+    block[2] -= minZ
+  }
+
+  return {
+    size: [maxX - minX + 1, maxY - minY + 1, maxZ - minZ + 1],
+    offset: [minX, minY, minZ]
+  }
+}
+
 function applyUnknownPolicy (entry, unknownPolicy) {
   if (entry.mapping?.status === 'unresolved' && unknownPolicy === 'drop') {
     return { action: 'drop' }
@@ -136,6 +183,8 @@ function createUnifiedBuilder ({ sourceFormat, sourceEdition, sourceVersion, par
   }
 
   function finalize (size) {
+    const declaredSize = Array.isArray(size) ? size.slice(0, 3).map((axis) => Number(axis) || 0) : [0, 0, 0]
+    const occupied = normalizeBlocksToOccupiedBounds(blocks, declaredSize)
     return {
       meta: {
         DataVersion: resolveTargetDataVersion({ sourceEdition, sourceDataVersion, targetVersion }),
@@ -143,7 +192,9 @@ function createUnifiedBuilder ({ sourceFormat, sourceEdition, sourceVersion, par
           format: sourceFormat,
           edition: sourceEdition,
           version: sourceVersion ?? null,
-          parser
+          parser,
+          declaredSize,
+          occupiedOffset: occupied.offset
         },
         target: {
           edition: 'java',
@@ -153,7 +204,7 @@ function createUnifiedBuilder ({ sourceFormat, sourceEdition, sourceVersion, par
         unknownPolicy,
         stats: finalizeStats(stats, paletteAcc.entries, blocks, entities)
       },
-      size,
+      size: occupied.size,
       palette: paletteAcc.entries,
       blocks,
       entities

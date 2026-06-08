@@ -417,6 +417,20 @@ const main = async () => {
       asset: currentInputPath ? toClientAssetPath(currentInputPath) : null,
       format: currentFormat
     })
+    socket.emit('pixal3dExportContext', {
+      asset: currentInputPath ? toClientAssetPath(currentInputPath) : null,
+      source: {
+        coordinateSpace: 'minecraft_unified_blocks',
+        blockPoint: 'center',
+        originWorld: structureOriginWorldPos,
+        size: structureSize,
+        pivotWorld: {
+          x: (structureOriginWorldPos ? structureOriginWorldPos.x : 0) + structureSize.x / 2,
+          y: (structureOriginWorldPos ? structureOriginWorldPos.y : 60) + structureSize.y / 2,
+          z: (structureOriginWorldPos ? structureOriginWorldPos.z : 0) + structureSize.z / 2
+        }
+      }
+    })
   }
 
   async function emitWorldStateToAllSockets ({ withVersion = false } = {}) {
