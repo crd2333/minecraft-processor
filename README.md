@@ -150,6 +150,8 @@ What `npm run build` does:
 - `npm run build:viewer-assets` generates Prismarine viewer textures/block-state assets into `static/vendor/packages/prismarine-viewer/public/`
 - Webpack bundles the application viewer runtime into `static/index.js` and the Prismarine viewer worker runtime into `static/vendor/packages/prismarine-viewer/public/worker.js`
 
+The vendor package build is content-aware. It prepares patched package sources under `.build/vendor-packages/`, stages generated vendor output under `.build/vendor-output/`, then syncs into `static/vendor/` only when file bytes differ. If the recorded input fingerprint still matches and the expected output files exist, the vendor build is skipped. Use `npm run build:vendor-packages -- -f` to force a vendor artifact refresh.
+
 `serve_mc.js` depends on built output and runtime static lookup assets under `static/`.
 
 ### Prebuilt runtime vendor assets

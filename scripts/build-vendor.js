@@ -1,14 +1,16 @@
 const fs = require('fs').promises
 const { builtinModules } = require('module')
+const crypto = require('crypto')
 const path = require('path')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 const NODE_MODULES_DIR = path.join(PROJECT_ROOT, 'node_modules')
 const STATIC_DIR = path.join(PROJECT_ROOT, 'static')
 const VENDOR_ROOT = path.join(STATIC_DIR, 'vendor')
-const PACKAGES_ROOT = path.join(VENDOR_ROOT, 'packages')
 const BUILD_ROOT = path.join(PROJECT_ROOT, '.build')
 const PATCHED_PACKAGES_ROOT = path.join(BUILD_ROOT, 'vendor-packages')
+const VENDOR_STAGING_ROOT = path.join(BUILD_ROOT, 'vendor-output')
+const VENDOR_STATE_FILE = path.join(BUILD_ROOT, 'vendor-build-state.json')
 const PRISMARINE_VIEWER_PATCH_ROOT = path.join(PROJECT_ROOT, 'patches', 'prismarine-viewer')
 
 const THREE_EXPORTERS = ['OBJExporter.js', 'STLExporter.js', 'GLTFExporter.js']
@@ -124,7 +126,7 @@ function makeExternalPredicate (entry) {
   }
 }
 
-async function bundleEntry (tools, entry) {
+async function bundleEntry (tools, entry, packagesRoot) {
   const bundle = await tools.rollup({
     input: path.join(packagePath(entry.packageName), entry.input),
     external: makeExternalPredicate(entry),
@@ -148,7 +150,7 @@ async function bundleEntry (tools, entry) {
   })
 
   try {
-    const outputFile = path.join(PACKAGES_ROOT, entry.output)
+    const outputFile = path.join(packagesRoot, entry.output)
     await fs.mkdir(path.dirname(outputFile), { recursive: true })
     await bundle.write({
       file: outputFile,
@@ -162,10 +164,10 @@ async function bundleEntry (tools, entry) {
   }
 }
 
-async function copyMinecraftDataAssets () {
+async function copyMinecraftDataAssets (packagesRoot) {
   const sourcePackageRoot = packagePath('minecraft-data')
   const sourceDataRoot = path.join(sourcePackageRoot, 'minecraft-data')
-  const targetPackageRoot = path.join(PACKAGES_ROOT, 'minecraft-data')
+  const targetPackageRoot = path.join(packagesRoot, 'minecraft-data')
   const targetDataRoot = path.join(targetPackageRoot, 'minecraft-data')
 
   await fs.mkdir(targetPackageRoot, { recursive: true })
@@ -176,9 +178,9 @@ async function copyMinecraftDataAssets () {
   await fs.cp(path.join(sourceDataRoot, 'schemas'), path.join(targetDataRoot, 'schemas'), { recursive: true })
 }
 
-async function copySocketIoClientAssets () {
+async function copySocketIoClientAssets (packagesRoot) {
   const sourceDir = path.join(packagePath('socket.io'), 'client-dist')
-  const targetDir = path.join(PACKAGES_ROOT, 'socket.io', 'client-dist')
+  const targetDir = path.join(packagesRoot, 'socket.io', 'client-dist')
   await fs.mkdir(targetDir, { recursive: true })
   await fs.cp(sourceDir, targetDir, {
     recursive: true,
@@ -186,9 +188,9 @@ async function copySocketIoClientAssets () {
   })
 }
 
-async function copyThreeExporters () {
+async function copyThreeExporters (vendorRoot) {
   const sourceDir = path.join(NODE_MODULES_DIR, 'three', 'examples', 'js', 'exporters')
-  const targetDir = path.join(VENDOR_ROOT, 'three', 'exporters')
+  const targetDir = path.join(vendorRoot, 'three', 'exporters')
   await fs.mkdir(targetDir, { recursive: true })
 
   for (const exporter of THREE_EXPORTERS) {
@@ -196,9 +198,9 @@ async function copyThreeExporters () {
   }
 }
 
-async function copyPrismarineViewerAssets () {
+async function copyPrismarineViewerAssets (packagesRoot) {
   const sourceRoot = packagePath('prismarine-viewer')
-  const targetRoot = path.join(PACKAGES_ROOT, 'prismarine-viewer')
+  const targetRoot = path.join(packagesRoot, 'prismarine-viewer')
   const sourceLibDir = path.join(sourceRoot, 'viewer', 'lib')
   const targetLibDir = path.join(targetRoot, 'viewer', 'lib')
   await fs.mkdir(targetLibDir, { recursive: true })
@@ -230,15 +232,15 @@ async function preparePatchedPrismarineViewerPackage () {
   }
 }
 
-async function writeManifest () {
+async function writeManifest (vendorRoot) {
   const modules = Object.fromEntries([
     ['minecraft-data', 'packages/minecraft-data/index.js'],
     ['minecraft-data/data.js', 'packages/minecraft-data/data.js'],
     ...BUNDLE_ENTRIES.map((entry) => [entry.specifier, `packages/${entry.output}`])
   ])
   const manifest = {
-    generatedAt: new Date().toISOString(),
     layout: 'bundle-manifest',
+    generatedBy: 'scripts/build-vendor.js',
     modules,
     assets: {
       minecraftData: [
@@ -259,10 +261,208 @@ async function writeManifest () {
     }
   }
 
-  await fs.writeFile(path.join(VENDOR_ROOT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+  await fs.writeFile(path.join(vendorRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+}
+
+async function pathExists (filePath) {
+  try {
+    await fs.access(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function walkFiles (rootDir) {
+  const files = []
+
+  async function walk (dirPath) {
+    let entries
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true })
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return
+      throw error
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        await walk(fullPath)
+      } else if (entry.isFile()) {
+        files.push(path.relative(rootDir, fullPath))
+      }
+    }
+  }
+
+  await walk(rootDir)
+  files.sort()
+  return files
+}
+
+async function walkExistingFiles (rootDir) {
+  return (await pathExists(rootDir)) ? walkFiles(rootDir) : []
+}
+
+function toPosixPath (relativePath) {
+  return relativePath.split(path.sep).join('/')
+}
+
+function isInsidePreservedDir (relativePath, preservedDirs) {
+  const normalized = toPosixPath(relativePath)
+  return preservedDirs.some((dir) => normalized === dir || normalized.startsWith(`${dir}/`))
+}
+
+async function filesEqual (left, right) {
+  try {
+    const [leftStat, rightStat] = await Promise.all([fs.stat(left), fs.stat(right)])
+    if (leftStat.size !== rightStat.size) return false
+  } catch {
+    return false
+  }
+
+  const [leftBytes, rightBytes] = await Promise.all([fs.readFile(left), fs.readFile(right)])
+  return leftBytes.equals(rightBytes)
+}
+
+async function copyFileIfChanged (sourceFile, targetFile, force) {
+  if (!force && await filesEqual(sourceFile, targetFile)) return false
+
+  await fs.mkdir(path.dirname(targetFile), { recursive: true })
+  await fs.copyFile(sourceFile, targetFile)
+  return true
+}
+
+async function syncDirectoryContents (sourceRoot, targetRoot, options = {}) {
+  const force = options.force === true
+  const preservedDirs = options.preservedDirs || []
+  const sourceFiles = await walkFiles(sourceRoot)
+  const targetFiles = await walkExistingFiles(targetRoot)
+  const sourceSet = new Set(sourceFiles.map(toPosixPath))
+  const summary = {
+    copied: 0,
+    unchanged: 0,
+    removed: 0,
+    preserved: 0
+  }
+
+  for (const relativePath of sourceFiles) {
+    const copied = await copyFileIfChanged(
+      path.join(sourceRoot, relativePath),
+      path.join(targetRoot, relativePath),
+      force
+    )
+    if (copied) summary.copied++
+    else summary.unchanged++
+  }
+
+  for (const relativePath of targetFiles) {
+    const normalized = toPosixPath(relativePath)
+    if (sourceSet.has(normalized)) continue
+
+    if (isInsidePreservedDir(normalized, preservedDirs)) {
+      summary.preserved++
+      continue
+    }
+
+    await fs.unlink(path.join(targetRoot, relativePath))
+    summary.removed++
+  }
+
+  return summary
+}
+
+async function collectFilesUnder (rootDir) {
+  const absoluteRoot = path.resolve(rootDir)
+  const files = await walkExistingFiles(absoluteRoot)
+  return files.map((relativePath) => path.join(absoluteRoot, relativePath))
+}
+
+async function computeVendorInputHash () {
+  const hash = crypto.createHash('sha256')
+  const packageNames = new Set([
+    'minecraft-data',
+    'prismarine-viewer',
+    'socket.io',
+    'three',
+    ...BUNDLE_ENTRIES.map((entry) => entry.packageName)
+  ])
+  const inputFiles = [
+    path.join(PROJECT_ROOT, 'package.json'),
+    path.join(PROJECT_ROOT, 'package-lock.json'),
+    path.join(PROJECT_ROOT, 'scripts', 'build-vendor.js'),
+    ...(await collectFilesUnder(PRISMARINE_VIEWER_PATCH_ROOT)),
+    ...[...packageNames].map((packageName) => path.join(NODE_MODULES_DIR, ...packageName.split('/'), 'package.json'))
+  ]
+
+  hash.update(`node:${process.versions.node}\n`)
+  for (const filePath of inputFiles.sort()) {
+    if (!await pathExists(filePath)) continue
+    hash.update(path.relative(PROJECT_ROOT, filePath))
+    hash.update('\0')
+    hash.update(await fs.readFile(filePath))
+    hash.update('\0')
+  }
+
+  return hash.digest('hex')
+}
+
+async function readVendorState () {
+  try {
+    return JSON.parse(await fs.readFile(VENDOR_STATE_FILE, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function writeVendorState (inputHash) {
+  await fs.mkdir(path.dirname(VENDOR_STATE_FILE), { recursive: true })
+  await fs.writeFile(VENDOR_STATE_FILE, `${JSON.stringify({
+    version: 1,
+    inputHash
+  }, null, 2)}\n`, 'utf8')
+}
+
+async function hasCompleteVendorOutput () {
+  const manifestPath = path.join(VENDOR_ROOT, 'manifest.json')
+  let manifest
+  try {
+    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'))
+  } catch {
+    return false
+  }
+
+  if (!manifest || !manifest.modules) return false
+
+  for (const relativePath of Object.values(manifest.modules)) {
+    if (!await pathExists(path.join(VENDOR_ROOT, relativePath))) return false
+  }
+
+  const assets = manifest.assets || {}
+  const assetPaths = [
+    ...(assets.minecraftData || []),
+    assets.socketIoClient,
+    assets.prismarineViewer && assets.prismarineViewer.package,
+    assets.prismarineViewer && assets.prismarineViewer.missingTexture,
+    ...(assets.threeExporters || [])
+  ].filter(Boolean)
+
+  for (const relativePath of assetPaths) {
+    const fullPath = path.join(VENDOR_ROOT, relativePath)
+    if (!await pathExists(fullPath)) return false
+  }
+
+  return true
+}
+
+async function shouldSkipVendorBuild (inputHash) {
+  const state = await readVendorState()
+  return !!(state && state.inputHash === inputHash && await hasCompleteVendorOutput())
 }
 
 async function main () {
+  const force = process.argv.includes('-f') || process.argv.includes('--force')
+
   if (process.argv.includes('--prepare-viewer-only')) {
     await fs.mkdir(PATCHED_PACKAGES_ROOT, { recursive: true })
     await preparePatchedPrismarineViewerPackage()
@@ -270,23 +470,40 @@ async function main () {
     return
   }
 
-  await fs.rm(VENDOR_ROOT, { recursive: true, force: true })
+  const inputHash = await computeVendorInputHash()
   await fs.mkdir(PATCHED_PACKAGES_ROOT, { recursive: true })
-  await fs.mkdir(PACKAGES_ROOT, { recursive: true })
   await preparePatchedPrismarineViewerPackage()
+
+  if (!force && await shouldSkipVendorBuild(inputHash)) {
+    console.log('static/vendor is up to date; skipping vendored package rebuild')
+    return
+  }
+
+  const stagingPackagesRoot = path.join(VENDOR_STAGING_ROOT, 'packages')
+  await fs.rm(VENDOR_STAGING_ROOT, { recursive: true, force: true })
+  await fs.mkdir(stagingPackagesRoot, { recursive: true })
 
   const tools = await loadRollupTools()
   for (const entry of BUNDLE_ENTRIES) {
-    await bundleEntry(tools, entry)
+    await bundleEntry(tools, entry, stagingPackagesRoot)
   }
 
-  await copyMinecraftDataAssets()
-  await copySocketIoClientAssets()
-  await copyPrismarineViewerAssets()
-  await copyThreeExporters()
-  await writeManifest()
+  await copyMinecraftDataAssets(stagingPackagesRoot)
+  await copySocketIoClientAssets(stagingPackagesRoot)
+  await copyPrismarineViewerAssets(stagingPackagesRoot)
+  await copyThreeExporters(VENDOR_STAGING_ROOT)
+  await writeManifest(VENDOR_STAGING_ROOT)
+
+  const syncSummary = await syncDirectoryContents(VENDOR_STAGING_ROOT, VENDOR_ROOT, {
+    force,
+    preservedDirs: [
+      'packages/prismarine-viewer/public'
+    ]
+  })
+  await writeVendorState(inputHash)
 
   console.log(`Built ${BUNDLE_ENTRIES.length} vendored module bundles into static/vendor/packages`)
+  console.log(`Synced static/vendor: ${syncSummary.copied} copied, ${syncSummary.unchanged} unchanged, ${syncSummary.removed} removed, ${syncSummary.preserved} preserved`)
 }
 
 main().catch((error) => {

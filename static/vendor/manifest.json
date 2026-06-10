@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-08T10:58:33.348Z",
   "layout": "bundle-manifest",
+  "generatedBy": "scripts/build-vendor.js",
   "modules": {
     "minecraft-data": "packages/minecraft-data/index.js",
     "minecraft-data/data.js": "packages/minecraft-data/data.js",
