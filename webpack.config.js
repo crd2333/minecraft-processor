@@ -67,5 +67,13 @@ module.exports = [
       filename: './worker.js'
     },
     externals: [minecraftDataFilter]
+  },
+  {
+    ...commonConfig,
+    entry: './apps/frontend/obj-viewer/src/client.js',
+    output: {
+      path: path.resolve(__dirname, './static'),
+      filename: './obj-viewer.js'
+    }
   }
 ]

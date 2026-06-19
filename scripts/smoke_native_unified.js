@@ -15,6 +15,7 @@ const {
 } = require('../src/structure_parser')
 const { loadUnifiedStructure } = require('../src/unified_parser')
 const { defaultViewerVersion, supportedVersions } = require('../src/viewer_versions')
+const { prepareMinewaysObjCache } = require('../src/obj-mesh/build_mesh_cache')
 const nbt = require('prismarine-nbt')
 
 function assertViewerVersionSupport () {
@@ -352,6 +353,38 @@ async function assertLargeBigEndianByteArrayNbtParses () {
   assert.strictEqual(parsed.simplified.Blocks.Data[largeByteArray.length - 1], 1, 'large byte array content should be preserved')
 }
 
+async function assertMinewaysObjCache () {
+  const fixturePath = path.resolve(process.cwd(), 'assets/mineways/1.obj')
+  try {
+    await fs.access(fixturePath)
+  } catch {
+    return null
+  }
+
+  const result = await prepareMinewaysObjCache(fixturePath, {
+    cacheDir: path.resolve(process.cwd(), '.cache/test-mineways-obj')
+  })
+
+  assert(result && result.mesh, 'Mineways OBJ cache should return mesh metadata')
+  assert(result.mesh.counts.vertexCount > 0, 'Mineways OBJ cache should contain vertices')
+  assert(result.mesh.counts.triangleCount > 0, 'Mineways OBJ cache should contain triangles')
+  assert(result.mesh.groups.length > 0, 'Mineways OBJ cache should contain material groups')
+  assert(result.mesh.groups.length <= result.mesh.materials.length, 'Mineways OBJ groups should map to material entries')
+
+  const bufferNames = Object.values(result.mesh.buffers)
+  for (const bufferName of bufferNames) {
+    await fs.access(path.join(result.cacheDir, bufferName))
+  }
+
+  return {
+    fixturePath: 'assets/mineways/1.obj',
+    cacheHit: result.cacheHit,
+    vertexCount: result.mesh.counts.vertexCount,
+    triangleCount: result.mesh.counts.triangleCount,
+    materialGroups: result.mesh.groups.length
+  }
+}
+
 async function main () {
   assertViewerVersionSupport()
 
@@ -377,9 +410,10 @@ async function main () {
   await assertMcstructureUsesInferredVersionForConversion()
   await assertMixedMcstructureVersionUsesDominantVersionAndWarns()
   await assertLargeBigEndianByteArrayNbtParses()
+  const minewaysObj = await assertMinewaysObjCache()
   assertUnknownPolicyBehavior()
 
-  console.log(JSON.stringify({ ok: true, results }, null, 2))
+  console.log(JSON.stringify({ ok: true, results, minewaysObj }, null, 2))
 }
 
 main().catch((error) => {

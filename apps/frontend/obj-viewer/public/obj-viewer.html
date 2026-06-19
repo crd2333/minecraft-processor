@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Mineways OBJ Viewer</title>
+    <style>
+      html { overflow: hidden; }
+      html, body { height: 100%; margin: 0; padding: 0; background: #111; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #obj-panel {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 260px;
+        max-width: calc(100vw - 20px);
+        max-height: calc(100vh - 20px);
+        overflow-y: auto;
+        box-sizing: border-box;
+        background: rgba(0, 0, 0, 0.72);
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-family: sans-serif;
+        color: #eee;
+      }
+      #obj-panel button {
+        cursor: pointer;
+        background: #2a7fd4;
+        color: #fff;
+        border: none;
+        border-radius: 5px;
+        padding: 7px 12px;
+        font-size: 13px;
+      }
+      #obj-panel button:hover { background: #1a6bc0; }
+      #obj-panel button:disabled {
+        cursor: not-allowed;
+        background: #4b5a66;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .panel-title {
+        color: #f0f0f0;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .panel-field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ddd;
+        font-size: 12px;
+      }
+      .panel-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ddd;
+        font-size: 12px;
+      }
+      .panel-field input {
+        width: 90px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      #obj-status {
+        color: #ccc;
+        font-size: 11px;
+        line-height: 1.35;
+        min-height: 14px;
+      }
+      #obj-stats {
+        color: #ddd;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="obj-panel">
+      <div class="panel-title">Mineways OBJ</div>
+      <div id="obj-stats">Loading mesh...</div>
+      <label class="panel-field">Size <input id="capture-size" type="number" min="64" max="4096" step="64" value="1024"></label>
+      <label class="panel-checkbox"><input type="checkbox" id="capture-show-guide"> Show square guide</label>
+      <button id="btn-screenshot" disabled>Screenshot</button>
+      <button id="btn-reset-camera" disabled>Reset Camera</button>
+      <div id="obj-status"></div>
+    </div>
+    <script src="/obj-viewer.js"></script>
+  </body>
+</html>

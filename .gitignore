@@ -3,6 +3,7 @@ model.*
 assets/
 node_modules/
 .build/
+.cache/
 static/blocksStates/
 static/textures/
 package-lock.json
