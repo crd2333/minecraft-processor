@@ -129,6 +129,24 @@ function litematicAxisMinAndSize (origin, sizeSigned) {
   return { min, size: sizeAbs }
 }
 
+function isEmptyPlainObject (value) {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  )
+}
+
+async function parseNbtBigEndianWithoutArrayGuard (buffer) {
+  const parsed = await nbt.parseAs(buffer, 'big', { noArraySizeCheck: true })
+  return {
+    simplified: nbt.simplify(parsed.data),
+    nbtEndian: parsed.type,
+    nbtParseHint: 'big-no-array-size-check'
+  }
+}
+
 async function parseNbtAuto (buffer) {
   const tries = [
     { hint: 'auto', parseHint: undefined },
@@ -137,19 +155,35 @@ async function parseNbtAuto (buffer) {
   ]
 
   let lastErr = null
+  let emptyResult = null
   for (const attempt of tries) {
     try {
       const { parsed, type } = await nbt.parse(buffer, attempt.parseHint)
-      return {
+      const result = {
         simplified: nbt.simplify(parsed),
         nbtEndian: type,
         nbtParseHint: attempt.hint
       }
+
+      if (isEmptyPlainObject(result.simplified)) {
+        emptyResult = emptyResult || result
+        continue
+      }
+
+      return result
     } catch (err) {
       lastErr = err
     }
   }
 
+  try {
+    const result = await parseNbtBigEndianWithoutArrayGuard(buffer)
+    if (!isEmptyPlainObject(result.simplified)) return result
+  } catch (err) {
+    lastErr = err
+  }
+
+  if (emptyResult) return emptyResult
   throw lastErr || new Error('Failed to parse NBT buffer')
 }
 

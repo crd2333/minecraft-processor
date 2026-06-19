@@ -3,6 +3,7 @@
 const assert = require('assert')
 const fs = require('fs').promises
 const path = require('path')
+const zlib = require('zlib')
 
 const {
   DEFAULT_UNIFIED_PARSE_VERSION,
@@ -313,6 +314,44 @@ async function assertMixedMcstructureVersionUsesDominantVersionAndWarns () {
   assert.deepStrictEqual(explicitWarnings, [], 'explicit override should suppress mixed-version warnings')
 }
 
+async function assertLargeBigEndianByteArrayNbtParses () {
+  const largeByteArray = new Array(0x1000000 + 1).fill(0)
+  largeByteArray[largeByteArray.length - 1] = 1
+
+  const payload = {
+    type: 'compound',
+    name: 'Schematic',
+    value: {
+      Version: { type: 'int', value: 3 },
+      DataVersion: { type: 'int', value: 3463 },
+      Width: { type: 'short', value: 1 },
+      Height: { type: 'short', value: 1 },
+      Length: { type: 'short', value: 1 },
+      Blocks: {
+        type: 'compound',
+        value: {
+          Palette: {
+            type: 'compound',
+            value: {
+              'minecraft:air': { type: 'int', value: 0 }
+            }
+          },
+          Data: { type: 'byteArray', value: largeByteArray }
+        }
+      }
+    }
+  }
+
+  const compressed = zlib.gzipSync(nbt.writeUncompressed(payload))
+  const parsed = await parseNbtAuto(compressed)
+
+  assert.strictEqual(parsed.nbtEndian, 'big', 'large Java NBT should parse as big-endian')
+  assert.strictEqual(parsed.nbtParseHint, 'big-no-array-size-check', 'large byte arrays should use the guarded fallback')
+  assert.strictEqual(parsed.simplified.Version, 3, 'large Java NBT should preserve root tags')
+  assert.strictEqual(parsed.simplified.Blocks.Data.length, largeByteArray.length, 'large byte array length should be preserved')
+  assert.strictEqual(parsed.simplified.Blocks.Data[largeByteArray.length - 1], 1, 'large byte array content should be preserved')
+}
+
 async function main () {
   assertViewerVersionSupport()
 
@@ -337,6 +376,7 @@ async function main () {
   await assertNormVersionNotImplemented()
   await assertMcstructureUsesInferredVersionForConversion()
   await assertMixedMcstructureVersionUsesDominantVersionAndWarns()
+  await assertLargeBigEndianByteArrayNbtParses()
   assertUnknownPolicyBehavior()
 
   console.log(JSON.stringify({ ok: true, results }, null, 2))
