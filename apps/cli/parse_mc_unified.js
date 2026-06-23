@@ -192,7 +192,8 @@ async function main () {
     version: args.version,
     normVersion: args.normVersion,
     targetVersion,
-    unknownPolicy: args.unknownPolicy
+    unknownPolicy: args.unknownPolicy,
+    logger: console
   }, inputPath)
 
   if (args.solidColor) {

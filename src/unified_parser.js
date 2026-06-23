@@ -272,7 +272,7 @@ function canonicalFromBedrockBlock ({ name, props, sourceVersion }) {
 }
 
 async function parseUnifiedSchematicLike (buffer, format, options) {
-  const schematic = await readSchematicWithFallback(buffer, options.version)
+  const schematic = await readSchematicWithFallback(buffer, options.version, options.logger)
   const size = [Number(schematic.size.x) || 0, Number(schematic.size.y) || 0, Number(schematic.size.z) || 0]
   const builder = createUnifiedBuilder({
     sourceFormat: format,

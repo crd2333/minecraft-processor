@@ -353,6 +353,55 @@ async function assertLargeBigEndianByteArrayNbtParses () {
   assert.strictEqual(parsed.simplified.Blocks.Data[largeByteArray.length - 1], 1, 'large byte array content should be preserved')
 }
 
+async function assertSchematicWarningsDoNotWriteStdout () {
+  const payload = {
+    type: 'compound',
+    name: 'Schematic',
+    value: {
+      Version: { type: 'int', value: 2 },
+      DataVersion: { type: 'int', value: 3463 },
+      Width: { type: 'short', value: 1 },
+      Height: { type: 'short', value: 1 },
+      Length: { type: 'short', value: 1 },
+      PaletteMax: { type: 'int', value: 1 },
+      Palette: {
+        type: 'compound',
+        value: {
+          'minecraft:missing_block': { type: 'int', value: 0 }
+        }
+      },
+      BlockData: { type: 'byteArray', value: [0] }
+    }
+  }
+
+  const buffer = zlib.gzipSync(nbt.writeUncompressed(payload))
+  const warnings = []
+  const stdoutWrites = []
+  const originalStdoutWrite = process.stdout.write
+
+  try {
+    process.stdout.write = function (chunk, ...args) {
+      stdoutWrites.push(String(chunk))
+      return originalStdoutWrite.call(this, chunk, ...args)
+    }
+
+    const parsed = await loadUnifiedStructure(buffer, 'schem', {
+      targetVersion: defaultViewerVersion,
+      unknownPolicy: 'keep',
+      logger: {
+        warn: (message) => warnings.push(String(message))
+      }
+    })
+
+    assert(parsed && parsed.meta && Array.isArray(parsed.palette), 'unified parse output should remain valid')
+  } finally {
+    process.stdout.write = originalStdoutWrite
+  }
+
+  assert.strictEqual(stdoutWrites.length, 0, 'schematic unknown-block warning must not write to stdout')
+  assert(warnings.some((message) => /Unknown block/.test(message)), 'schematic unknown-block warning should flow through logger.warn')
+}
+
 async function assertMinewaysObjCache () {
   const fixturePath = path.resolve(process.cwd(), 'assets/mineways/1.obj')
   try {
@@ -410,6 +459,7 @@ async function main () {
   await assertMcstructureUsesInferredVersionForConversion()
   await assertMixedMcstructureVersionUsesDominantVersionAndWarns()
   await assertLargeBigEndianByteArrayNbtParses()
+  await assertSchematicWarningsDoNotWriteStdout()
   const minewaysObj = await assertMinewaysObjCache()
   assertUnknownPolicyBehavior()
 

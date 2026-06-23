@@ -1,4 +1,5 @@
 const path = require('path')
+const util = require('util')
 const nbt = require('prismarine-nbt')
 const { Schematic } = require('prismarine-schematic')
 const spongeSchematic = require('prismarine-schematic/lib/spongeSchematic')
@@ -10,6 +11,27 @@ const versions = require('minecraft-data').versions.pc
 const { inferDominantBedrockVersion, inferSingleBedrockVersion } = require('./bedrock-adapter/version')
 
 const DEFAULT_UNIFIED_PARSE_VERSION = '1.21.8'
+
+async function withSchematicConsoleLogRedirect (logger, fn) {
+  const originalLog = console.log
+  const warningLogger = typeof logger?.warn === 'function'
+    ? logger.warn.bind(logger)
+    : console.warn.bind(console)
+  const messages = []
+
+  console.log = (...args) => {
+    messages.push(util.format(...args))
+  }
+
+  try {
+    return await fn()
+  } finally {
+    console.log = originalLog
+    for (const message of messages) {
+      warningLogger(message)
+    }
+  }
+}
 
 function detectStructureFormat (inputPath) {
   const ext = path.extname(inputPath).toLowerCase()
@@ -700,33 +722,35 @@ function createSchematicFromSpongeV3 (nbtData, versionHint) {
   return new Schematic(version, new Vec3(width, height, length), offset, palette, blocks)
 }
 
-async function readSchematicWithFallback (buffer, versionHint) {
-  try {
-    return await Schematic.read(buffer, versionHint)
-  } catch (primaryError) {
-    const nbtInfo = await parseNbtAuto(buffer)
-    const unwrapped = unwrapSchematicRoot(nbtInfo.simplified)
-
+async function readSchematicWithFallback (buffer, versionHint, logger = console) {
+  return withSchematicConsoleLogRedirect(logger, async () => {
     try {
-      if (looksLikeSpongeV3Schematic(unwrapped)) {
-        return createSchematicFromSpongeV3(unwrapped, versionHint)
+      return await Schematic.read(buffer, versionHint)
+    } catch (primaryError) {
+      const nbtInfo = await parseNbtAuto(buffer)
+      const unwrapped = unwrapSchematicRoot(nbtInfo.simplified)
+
+      try {
+        if (looksLikeSpongeV3Schematic(unwrapped)) {
+          return createSchematicFromSpongeV3(unwrapped, versionHint)
+        }
+
+        if (looksLikeSpongeSchematic(unwrapped)) {
+          return spongeSchematic.read(unwrapped, versionHint)
+        }
+
+        if (looksLikeMcEditSchematic(unwrapped)) {
+          return mceditSchematic.read(unwrapped, versionHint)
+        }
+      } catch (fallbackError) {
+        throw new Error(
+          `Failed to parse schematic with native and fallback readers: ${fallbackError.message || fallbackError}`
+        )
       }
 
-      if (looksLikeSpongeSchematic(unwrapped)) {
-        return spongeSchematic.read(unwrapped, versionHint)
-      }
-
-      if (looksLikeMcEditSchematic(unwrapped)) {
-        return mceditSchematic.read(unwrapped, versionHint)
-      }
-    } catch (fallbackError) {
-      throw new Error(
-        `Failed to parse schematic with native and fallback readers: ${fallbackError.message || fallbackError}`
-      )
+      throw primaryError
     }
-
-    throw primaryError
-  }
+  })
 }
 
 function isJavaStructureNbt (simplified) {
