@@ -1,0 +1,18 @@
+# Generated bundles and vendor output. Keep static/mc_mappings.json searchable.
+static/index.js
+static/index.js.LICENSE.txt
+static/obj-viewer.js
+static/obj-viewer.js.LICENSE.txt
+static/vendor/**
+static/blocksStates/**
+static/textures/**
+
+# Build/test caches and scratch outputs.
+.build/**
+.cache/**
+tmp/**
+__pycache__/**
+*.pyc
+
+# Trellis backup snapshots are historical copies, not current source.
+.trellis/.backup-*/**
