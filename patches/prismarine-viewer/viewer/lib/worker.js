@@ -21,6 +21,17 @@ function sectionKey (x, y, z) {
   return `${x},${y},${z}`
 }
 
+function getSectionIndex (chunk, y) {
+  const minY = Number.isFinite(chunk.minY) ? chunk.minY : 0
+  return Math.floor((y - minY) / 16)
+}
+
+function hasSection (chunk, y) {
+  if (!chunk || !Array.isArray(chunk.sections)) return false
+  const index = getSectionIndex(chunk, y)
+  return index >= 0 && index < chunk.sections.length && Boolean(chunk.sections[index])
+}
+
 const dirtySections = {}
 
 function setSectionDirty (pos, value = true) {
@@ -32,7 +43,7 @@ function setSectionDirty (pos, value = true) {
   if (!value) {
     delete dirtySections[key]
     postMessage({ type: 'sectionFinished', key })
-  } else if (chunk && chunk.sections[Math.floor(y / 16)]) {
+  } else if (hasSection(chunk, y)) {
     dirtySections[key] = value
   } else {
     postMessage({ type: 'sectionFinished', key })
@@ -74,7 +85,7 @@ setInterval(() => {
     y = parseInt(y, 10)
     z = parseInt(z, 10)
     const chunk = world.getColumn(x, z)
-    if (chunk && chunk.sections[Math.floor(y / 16)]) {
+    if (hasSection(chunk, y)) {
       delete dirtySections[key]
       const geometry = getSectionGeometry(x, y, z, world, blocksStates)
       const transferable = [geometry.positions.buffer, geometry.normals.buffer, geometry.colors.buffer, geometry.uvs.buffer, geometry.blockIds.buffer]

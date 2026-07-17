@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Schematic Curator</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #11161b;
+        --panel: #1a2229;
+        --panel-strong: #202a33;
+        --border: #35434e;
+        --text: #eef3f5;
+        --muted: #9eabb3;
+        --accent: #f0a04b;
+        --accent-strong: #ffc36f;
+        --keep: #4dc28a;
+        --maybe: #d2ab52;
+        --functional: #6ea8d8;
+        --reject: #dc6c70;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      button, select { font: inherit; }
+      button { touch-action: manipulation; }
+      button:focus-visible, select:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 2px; }
+
+      #curator-app {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        pointer-events: none;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #curator-panel {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        bottom: 16px;
+        z-index: 20;
+        width: min(360px, calc(100vw - 32px));
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding: 20px;
+        overflow-y: auto;
+        background: rgba(26, 34, 41, 0.96);
+        border: 1px solid rgba(94, 111, 123, 0.72);
+        border-radius: 8px;
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.35);
+        pointer-events: auto;
+      }
+      .eyebrow {
+        margin: 0 0 3px;
+        color: var(--accent-strong);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      h1 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 700; }
+      h2 { margin: 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+      .section { display: flex; flex-direction: column; gap: 9px; }
+      .section + .section { padding-top: 15px; border-top: 1px solid rgba(119, 137, 150, 0.22); }
+      .asset-name {
+        min-height: 44px;
+        padding: 10px 12px;
+        overflow-wrap: anywhere;
+        background: var(--panel-strong);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: #fff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      .progress-line { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+      .progress-track { height: 6px; overflow: hidden; background: #303b44; border-radius: 999px; }
+      #progress-fill { width: 0; height: 100%; background: var(--accent); transition: width 180ms ease-out; }
+      .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .metric { min-width: 0; padding: 9px 8px; background: var(--panel-strong); border: 1px solid var(--border); border-radius: 6px; }
+      .metric-label { color: var(--muted); font-size: 11px; }
+      .metric-value { margin-top: 2px; font-variant-numeric: tabular-nums; font-weight: 700; }
+      .rating-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .rating-button, .secondary-button, .preset-button {
+        min-height: 44px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        background: #2b3740;
+        cursor: pointer;
+        transition: background 160ms ease-out, border-color 160ms ease-out, transform 100ms ease-out;
+      }
+      .rating-button:hover, .secondary-button:hover, .preset-button:hover { background: #35434d; border-color: #71818b; }
+      .rating-button:active, .secondary-button:active, .preset-button:active { transform: scale(0.98); }
+      .rating-button[data-rating="keep"] { border-color: rgba(77, 194, 138, 0.62); }
+      .rating-button[data-rating="maybe"] { border-color: rgba(210, 171, 82, 0.62); }
+      .rating-button[data-rating="functional"] { border-color: rgba(110, 168, 216, 0.62); }
+      .rating-button[data-rating="reject"] { border-color: rgba(220, 108, 112, 0.62); }
+      .rating-button[aria-pressed="true"] { color: #11161b; font-weight: 700; }
+      .rating-button[data-rating="keep"][aria-pressed="true"] { background: var(--keep); }
+      .rating-button[data-rating="maybe"][aria-pressed="true"] { background: var(--maybe); }
+      .rating-button[data-rating="functional"][aria-pressed="true"] { background: var(--functional); }
+      .rating-button[data-rating="reject"][aria-pressed="true"] { background: var(--reject); }
+      .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .preset-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .small-note { color: var(--muted); font-size: 12px; }
+      #status { min-height: 20px; color: var(--muted); font-size: 12px; }
+      #status[data-kind="error"] { color: #ff9b9f; }
+      #status[data-kind="success"] { color: #8ee2b6; }
+      #keyboard-help { color: var(--muted); font-size: 12px; }
+      kbd {
+        display: inline-block;
+        min-width: 22px;
+        padding: 1px 5px;
+        border: 1px solid #5a6a75;
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        color: #e8eef0;
+        font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        text-align: center;
+      }
+      .footer { margin-top: auto; display: flex; flex-direction: column; gap: 7px; }
+      .footer-line { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+      .hidden { display: none !important; }
+
+      @media (max-width: 720px) {
+        #curator-panel {
+          top: auto;
+          right: 8px;
+          bottom: 8px;
+          left: 8px;
+          width: auto;
+          max-height: min(58vh, 560px);
+          padding: 14px;
+          gap: 12px;
+        }
+        h1 { font-size: 18px; }
+        .section + .section { padding-top: 12px; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="curator-app">
+      <aside id="curator-panel" aria-label="Schematic curation controls">
+        <header class="section">
+          <div>
+            <p class="eyebrow">Asset review</p>
+            <h1>Schematic Curator</h1>
+          </div>
+          <div id="asset-name" class="asset-name">Loading asset...</div>
+          <div class="progress-line"><span id="progress-label">0 / 0 reviewed</span><span id="progress-percent">0%</span></div>
+          <div class="progress-track" aria-hidden="true"><div id="progress-fill"></div></div>
+        </header>
+
+        <section class="section" aria-labelledby="metrics-title">
+          <h2 id="metrics-title">Structure</h2>
+          <div class="metric-grid">
+            <div class="metric"><div class="metric-label">Size</div><div id="metric-size" class="metric-value">--</div></div>
+            <div class="metric"><div class="metric-label">Max edge</div><div id="metric-max" class="metric-value">--</div></div>
+            <div class="metric"><div class="metric-label">Blocks</div><div id="metric-blocks" class="metric-value">--</div></div>
+            <div class="metric"><div class="metric-label">Palette</div><div id="metric-palette" class="metric-value">--</div></div>
+            <div class="metric"><div class="metric-label">Rating</div><div id="metric-rating" class="metric-value">unrated</div></div>
+            <div class="metric"><div class="metric-label">Format</div><div id="metric-format" class="metric-value">schem</div></div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="rating-title">
+          <h2 id="rating-title">Rating</h2>
+          <div class="rating-grid">
+            <button class="rating-button" data-rating="keep" aria-pressed="false">Keep <kbd>K</kbd></button>
+            <button class="rating-button" data-rating="maybe" aria-pressed="false">Maybe <kbd>M</kbd></button>
+            <button class="rating-button" data-rating="functional" aria-pressed="false">Functional <kbd>F</kbd></button>
+            <button class="rating-button" data-rating="reject" aria-pressed="false">Reject <kbd>X</kbd></button>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="navigation-title">
+          <h2 id="navigation-title">Navigation</h2>
+          <div class="button-row">
+            <button id="previous-button" class="secondary-button">Previous</button>
+            <button id="next-button" class="secondary-button">Next unrated</button>
+          </div>
+          <div class="preset-row">
+            <button class="preset-button" data-preset="front">Front <kbd>1</kbd></button>
+            <button class="preset-button" data-preset="rear">Rear <kbd>2</kbd></button>
+            <button class="preset-button" data-preset="top">Top <kbd>3</kbd></button>
+          </div>
+          <div id="keyboard-help"><kbd>K</kbd> <kbd>M</kbd> <kbd>F</kbd> <kbd>X</kbd> rate and advance · <kbd>←</kbd> <kbd>→</kbd> browse</div>
+        </section>
+
+        <div id="status" role="status" aria-live="polite">Connecting...</div>
+        <div id="load-error" class="small-note hidden" role="alert"></div>
+
+        <footer class="footer">
+          <div class="footer-line">CSV: <span id="csv-path">--</span></div>
+          <div class="footer-line">Drag to orbit · scroll to zoom</div>
+        </footer>
+      </aside>
+    </main>
+    <script src="/viewer-preload.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/index.js"></script>
+    <script src="/curator.js"></script>
+  </body>
+</html>

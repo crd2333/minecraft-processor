@@ -160,6 +160,8 @@ class WorldRenderer {
       this.scene.remove(mesh)
     }
     this.sectionMeshs = {}
+    this.loadedChunks = {}
+    this.sectionsOutstanding.clear()
     this.stateIdToName = {}
     for (const worker of this.workers) {
       worker.postMessage({ type: 'reset' })
@@ -205,7 +207,9 @@ class WorldRenderer {
     for (const worker of this.workers) {
       worker.postMessage({ type: 'chunk', x, z, chunk })
     }
-    for (let y = 0; y < 256; y += 16) {
+    const minY = Number.isFinite(chunk.minY) ? chunk.minY : 0
+    const worldHeight = Number.isFinite(chunk.worldHeight) ? chunk.worldHeight : 256
+    for (let y = minY; y < minY + worldHeight; y += 16) {
       const loc = new Vec3(x, y, z)
       this.setSectionDirty(loc)
       this.setSectionDirty(loc.offset(-16, 0, 0))
