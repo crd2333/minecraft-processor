@@ -26,17 +26,44 @@ DEFAULTS = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "model": "gemini-3-pro-image-preview",
+        "size": "auto",
+        "aspect_ratio": "auto",
         "key_env": "GEMINI_API_KEY",
         "base_url_env": "GEMINI_BASE_URL",
         "model_env": "GEMINI_IMAGE_MODEL",
+        "size_env": "GEMINI_IMAGE_SIZE",
+        "aspect_ratio_env": "GEMINI_IMAGE_ASPECT_RATIO",
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-image-1",
+        "size": "auto",
+        "quality": "high",
+        "output_format": "png",
         "key_env": "OPENAI_API_KEY",
         "base_url_env": "OPENAI_BASE_URL",
         "model_env": "OPENAI_IMAGE_MODEL",
+        "size_env": "OPENAI_IMAGE_SIZE",
+        "quality_env": "OPENAI_IMAGE_QUALITY",
+        "output_format_env": "OPENAI_IMAGE_OUTPUT_FORMAT",
     },
+}
+OPENAI_IMAGE_SIZES = {"auto", "1024x1024", "1536x1024", "1024x1536"}
+OPENAI_IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
+OPENAI_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
+GEMINI_IMAGE_SIZES = {"auto", "1K", "2K", "4K"}
+GEMINI_ASPECT_RATIOS = {
+    "auto",
+    "1:1",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:3",
+    "4:5",
+    "5:4",
+    "9:16",
+    "16:9",
+    "21:9",
 }
 INPUT_MIME_TYPES = {
     ".png": "image/png",
@@ -279,7 +306,16 @@ def request_with_retries(operation, retries, api_key, label):
     raise AssertionError("retry loop exhausted unexpectedly")
 
 
-def gemini_request(endpoint, api_key, prompt, image_data, mime_type, timeout):
+def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation, timeout):
+    generation_config = {"responseModalities": ["TEXT", "IMAGE"]}
+    image_config = {}
+    if generation["imageSize"] != "auto":
+        image_config["imageSize"] = generation["imageSize"]
+    if generation["aspectRatio"] != "auto":
+        image_config["aspectRatio"] = generation["aspectRatio"]
+    if image_config:
+        generation_config["imageConfig"] = image_config
+
     payload = {
         "contents": [
             {
@@ -295,7 +331,7 @@ def gemini_request(endpoint, api_key, prompt, image_data, mime_type, timeout):
                 ],
             }
         ],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        "generationConfig": generation_config,
     }
     headers = {
         "Content-Type": "application/json",
@@ -358,12 +394,15 @@ def multipart_file(boundary, name, filename, mime_type, data):
     return header + data + b"\r\n"
 
 
-def build_openai_multipart(model, prompt, image_name, image_data, mime_type):
+def build_openai_multipart(model, prompt, image_name, image_data, mime_type, generation):
     boundary = "----minecraft-realistic-" + uuid.uuid4().hex
     body = bytearray()
     body += multipart_field(boundary, "model", model)
     body += multipart_field(boundary, "prompt", prompt)
     body += multipart_field(boundary, "n", "1")
+    body += multipart_field(boundary, "size", generation["size"])
+    body += multipart_field(boundary, "quality", generation["quality"])
+    body += multipart_field(boundary, "output_format", generation["outputFormat"])
     body += multipart_file(boundary, "image", image_name, mime_type, image_data)
     body += f"--{boundary}--\r\n".encode("ascii")
     return bytes(body), boundary
@@ -402,9 +441,11 @@ def openai_response_image(payload, timeout):
     raise RequestFailure("OpenAI-compatible response contains neither base64 image data nor an image URL")
 
 
-def openai_request(endpoint, model, api_key, prompt, image_path, image_data, mime_type, timeout):
+def openai_request(
+    endpoint, model, api_key, prompt, image_path, image_data, mime_type, generation, timeout
+):
     body, boundary = build_openai_multipart(
-        model, prompt, Path(image_path).name, image_data, mime_type
+        model, prompt, Path(image_path).name, image_data, mime_type, generation
     )
     request = Request(
         endpoint,
@@ -505,7 +546,9 @@ def load_metadata(path):
     return payload if isinstance(payload, dict) else None
 
 
-def completion_matches(metadata, source_sha256, prompt_sha256, provider, model, endpoint, output_dir):
+def completion_matches(
+    metadata, source_sha256, prompt_sha256, provider, model, endpoint, generation, output_dir
+):
     if not metadata or metadata.get("format") != TOOL_FORMAT:
         return False
     source = metadata.get("source") or {}
@@ -517,6 +560,7 @@ def completion_matches(metadata, source_sha256, prompt_sha256, provider, model, 
         or request.get("provider") != provider
         or request.get("model") != model
         or request.get("endpoint") != redact_url(endpoint)
+        or request.get("generation") != generation
     ):
         return False
     relative_output = output.get("path")
@@ -570,12 +614,51 @@ def resolve_config(args):
         )
     if args.provider == "openai" and not api_key and not args.dry_run:
         raise ValueError("OpenAI-compatible requests require OPENAI_API_KEY or --api-key")
+
+    if args.provider == "openai":
+        if args.aspect_ratio is not None:
+            raise ValueError("--aspect-ratio is only supported by the Gemini provider")
+        size = str(args.size or os.environ.get(defaults["size_env"]) or defaults["size"]).lower()
+        quality = str(
+            args.quality or os.environ.get(defaults["quality_env"]) or defaults["quality"]
+        ).lower()
+        output_format = str(
+            args.output_format
+            or os.environ.get(defaults["output_format_env"])
+            or defaults["output_format"]
+        ).lower()
+        if output_format == "jpg":
+            output_format = "jpeg"
+        if size not in OPENAI_IMAGE_SIZES:
+            raise ValueError(f"Unsupported OpenAI image size: {size}")
+        if quality not in OPENAI_IMAGE_QUALITIES:
+            raise ValueError(f"Unsupported OpenAI image quality: {quality}")
+        if output_format not in OPENAI_OUTPUT_FORMATS:
+            raise ValueError(f"Unsupported OpenAI output format: {output_format}")
+        generation = {"size": size, "quality": quality, "outputFormat": output_format}
+    else:
+        if args.quality is not None or args.output_format is not None:
+            raise ValueError("--quality and --output-format are only supported by the OpenAI provider")
+        raw_size = args.size or os.environ.get(defaults["size_env"]) or defaults["size"]
+        size = "auto" if str(raw_size).lower() == "auto" else str(raw_size).upper()
+        aspect_ratio = str(
+            args.aspect_ratio
+            or os.environ.get(defaults["aspect_ratio_env"])
+            or defaults["aspect_ratio"]
+        ).lower()
+        if size not in GEMINI_IMAGE_SIZES:
+            raise ValueError(f"Unsupported Gemini image size: {size}")
+        if aspect_ratio not in GEMINI_ASPECT_RATIOS:
+            raise ValueError(f"Unsupported Gemini aspect ratio: {aspect_ratio}")
+        generation = {"imageSize": size, "aspectRatio": aspect_ratio}
+
     return {
         "provider": args.provider,
         "base_url": base_url,
         "model": model,
         "api_key": api_key,
         "endpoint": endpoint,
+        "generation": generation,
     }
 
 
@@ -587,6 +670,7 @@ def generate_one(config, prompt, source_path, source_data, mime_type, timeout):
             prompt,
             source_data,
             mime_type,
+            config["generation"],
             timeout,
         )
     return openai_request(
@@ -597,6 +681,7 @@ def generate_one(config, prompt, source_path, source_data, mime_type, timeout):
         source_path,
         source_data,
         mime_type,
+        config["generation"],
         timeout,
     )
 
@@ -623,6 +708,7 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
         config["provider"],
         config["model"],
         config["endpoint"],
+        config["generation"],
         output_dir,
     ) and not args.overwrite:
         return "skipped", metadata_path
@@ -662,6 +748,7 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
             "provider": config["provider"],
             "model": config["model"],
             "endpoint": redact_url(config["endpoint"]),
+            "generation": config["generation"],
             "promptPath": str(prompt_path),
             "promptSha256": prompt_sha256,
             "prompt": prompt,
@@ -694,6 +781,22 @@ def build_parser():
     parser.add_argument("--output", type=Path, required=True, help="Output directory")
     parser.add_argument("--base-url", help="Provider API root or complete generation/edit endpoint")
     parser.add_argument("--model", help="Provider model (overrides the provider environment variable)")
+    parser.add_argument(
+        "--size",
+        help="Output size: OpenAI auto/1024x1024/1536x1024/1024x1536; Gemini auto/1K/2K/4K",
+    )
+    parser.add_argument(
+        "--quality",
+        help="OpenAI quality: auto, low, medium, or high (default: high)",
+    )
+    parser.add_argument(
+        "--output-format",
+        help="OpenAI output format: png, jpeg, or webp (default: png)",
+    )
+    parser.add_argument(
+        "--aspect-ratio",
+        help="Gemini aspect ratio such as 1:1 or 16:9 (default: auto)",
+    )
     parser.add_argument(
         "--api-key",
         help="API key override; prefer GEMINI_API_KEY or OPENAI_API_KEY to keep secrets out of process listings",
@@ -732,6 +835,7 @@ def run(args):
 
     print(f"Provider: {config['provider']} / {config['model']}")
     print(f"Endpoint: {redact_url(config['endpoint'])}")
+    print("Generation: " + ", ".join(f"{key}={value}" for key, value in config["generation"].items()))
     print(f"Prompt: {prompt_path} ({prompt_sha256[:12]})")
     print(f"Images: {len(images)}")
     if args.dry_run:

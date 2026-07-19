@@ -58,6 +58,10 @@ class FakeApiHandler(BaseHTTPRequestHandler):
             inline = parts[1]["inline_data"]
             assert inline["mime_type"] == "image/png"
             assert base64.b64decode(inline["data"]) == PNG_BYTES
+            assert payload["generationConfig"]["imageConfig"] == {
+                "imageSize": "2K",
+                "aspectRatio": "16:9",
+            }
             encoded = base64.b64encode(PNG_BYTES).decode("ascii")
             self.send_json(
                 {
@@ -90,6 +94,9 @@ class FakeApiHandler(BaseHTTPRequestHandler):
                     fields[name] = (part.get_payload(decode=True) or b"").decode()
             assert fields["model"] == "fake-image-model"
             assert fields["n"] == "1"
+            assert fields["size"] == "auto"
+            assert fields["quality"] == "high"
+            assert fields["output_format"] == "png"
             assert fields["prompt"]
             assert file_data == PNG_BYTES
             FakeApiHandler.image_requests += 1
@@ -118,7 +125,7 @@ def run_cli(args, env):
     return result.stdout, result.stderr
 
 
-def assert_generated_metadata(output_dir, expected_count, provider, model):
+def assert_generated_metadata(output_dir, expected_count, provider, model, generation):
     metadata = sorted(Path(output_dir).rglob("*.json"))
     images = sorted(
         path
@@ -131,6 +138,7 @@ def assert_generated_metadata(output_dir, expected_count, provider, model):
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["request"]["provider"] == provider
         assert payload["request"]["model"] == model
+        assert payload["request"]["generation"] == generation
         assert "gemini-test-key" not in path.read_text(encoding="utf-8")
         assert "openai-test-key" not in path.read_text(encoding="utf-8")
 
@@ -166,6 +174,10 @@ def main():
                     f"http://127.0.0.1:{port}/v1beta",
                     "--model",
                     "fake-gemini-model",
+                    "--size",
+                    "2K",
+                    "--aspect-ratio",
+                    "16:9",
                     "--api-key",
                     "gemini-test-key",
                     "--prompt-file",
@@ -178,7 +190,13 @@ def main():
                 common_env,
             )
             assert "generated=1" in stdout
-            assert_generated_metadata(gemini_output, 1, "gemini", "fake-gemini-model")
+            assert_generated_metadata(
+                gemini_output,
+                1,
+                "gemini",
+                "fake-gemini-model",
+                {"imageSize": "2K", "aspectRatio": "16:9"},
+            )
 
             openai_output = root / "openai-output"
             stdout, _ = run_cli(
@@ -203,7 +221,13 @@ def main():
                 common_env,
             )
             assert "generated=2" in stdout
-            assert_generated_metadata(openai_output, 2, "openai", "fake-image-model")
+            assert_generated_metadata(
+                openai_output,
+                2,
+                "openai",
+                "fake-image-model",
+                {"size": "auto", "quality": "high", "outputFormat": "png"},
+            )
             call_count = len(FakeApiHandler.calls)
 
             stdout, _ = run_cli(
