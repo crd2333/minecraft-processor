@@ -1,0 +1,26 @@
+Task: Reconstruct the provided Minecraft-style scene as a true photorealistic photograph of its real-world counterpart.
+
+Priority 1 - Preserve scene identity and composition:
+- Keep the same camera viewpoint, projection, framing, horizon, and crop.
+- Keep the same semantic objects and terrain regions, with the same object count, dominant colors, relative positions, depth ordering, broad silhouettes, and scale relationships.
+- Keep foreground, middle-ground, background, and empty-space placement consistent with the source.
+- Treat the scene inventory as closed: do not introduce new buildings, props, terrain features, people, animals, vegetation masses, weather elements, or background landmarks, and do not remove source elements.
+
+Priority 2 - Fundamentally re-imagine local geometry:
+- Treat the source pixels and voxel regions as semantic and compositional evidence, not as literal surface geometry.
+- Replace every block staircase, cube cluster, grid edge, and pixelated contour with the continuous natural or manufactured form that the depicted real-world object would have.
+- Use smooth terrain, irregular natural erosion, continuous roofs and walls, rounded organic forms, realistic foliage, and clean manufactured joints wherever semantically appropriate.
+- Preserving composition does not mean preserving cubes. Never retain block shapes merely to match the source locally.
+
+Priority 3 - Produce photographic materials and lighting:
+- Use physically based, real-world materials with fine non-repeating detail at multiple scales.
+- Use plausible natural illumination, global illumination, contact shadows, reflections, atmospheric depth, and camera exposure.
+- Preserve source color relationships while translating flat game colors into believable material colors.
+- The result must look like a photograph captured in a real place, not a game screenshot, voxel render, miniature, toy, diorama, concept painting, or stylized architectural visualization.
+
+Hard exclusions:
+- No visible voxel grid, cubes, block seams, one-block steps, pixel art, square foliage clusters, tiled Minecraft textures, low-poly facets, or blocky silhouettes.
+- No camera-angle change, reframing, object relocation, major silhouette drift, changed terrain layout, substituted subject, invented object, or decorative addition.
+- Do not place text, borders, watermarks, labels, or interface elements in the image.
+
+When exact local detail is ambiguous, choose the simplest physically plausible surface interpretation that preserves the source object's identity and broad silhouette. Add material micro-detail only; do not add new semantic objects.
