@@ -7,6 +7,7 @@ const { detectStructureFormat } = require('../src/structure_parser')
 const { loadUnifiedStructure } = require('../src/unified_parser')
 const { buildWorldFromUnifiedStructure } = require('../src/world_builder')
 const { defaultViewerVersion } = require('../src/viewer_versions')
+const { CSV_COLUMNS, parseCsvRowsToObjects } = require('./curate_schematics')
 
 const PROJECT_ROOT = path.resolve(__dirname, '..')
 const STATIC_DIR = path.join(PROJECT_ROOT, 'static')
@@ -24,7 +25,7 @@ const SOCKET_MAX_BUFFER_BYTES = 32 * 1024 * 1024
 function showUsage () {
   console.log([
     'Usage:',
-    '  node scripts/render_schematic_list.js <path-list> --asset-root <directory> --output <directory> [options]',
+    '  node scripts/render_schematic_list.js <input> --asset-root <directory> --output <directory> [options]',
     '',
     'Options:',
     '      --asset-root <path>   Base directory for paths in the list (required)',
@@ -33,8 +34,9 @@ function showUsage () {
     '  -p, --port <port>         Preferred port (default: 3200)',
     '  -h, --help                Show this help',
     '',
-    'Path list:',
-    '  One asset path per line, relative to --asset-root. Blank lines and # comments are ignored.'
+    'Input:',
+    '  Newline-delimited asset paths, or curation-ratings.csv. For CSV input, only keep-rated assets are rendered.',
+    '  Asset paths are relative to --asset-root; blank lines and # comments are ignored.'
   ].join('\n'))
 }
 
@@ -100,6 +102,21 @@ function parsePathList (text) {
 
   if (entries.length === 0) throw new Error('Path list contains no assets')
   return entries
+}
+
+function parseInputList (text) {
+  const input = String(text).replace(/^\uFEFF/, '')
+  const firstLine = input.split(/\r?\n/, 1)[0].trim()
+  if (firstLine !== CSV_COLUMNS.join(',')) return parsePathList(input)
+
+  const rows = parseCsvRowsToObjects(input)
+  const acceptedRefs = rows
+    .filter((row) => row.rating === 'keep')
+    .map((row) => row.asset_path)
+  if (acceptedRefs.length === 0) {
+    throw new Error('Ratings CSV contains no assets rated keep')
+  }
+  return parsePathList(acceptedRefs.join('\n'))
 }
 
 function isPathInsideBase (baseDir, targetPath) {
@@ -352,7 +369,7 @@ async function runServer (options) {
     if (error.code === 'ENOENT') throw new Error(`Path list does not exist: ${listPath}`)
     throw error
   })
-  const assetRefs = parsePathList(listText)
+  const assetRefs = parseInputList(listText)
   const validatedAssets = await validateAssetEntries(options.assetRoot, assetRefs)
   const assets = validatedAssets.assets
   const outputDir = path.resolve(process.cwd(), options.output)
@@ -538,7 +555,7 @@ async function runServer (options) {
   if (currentPort >= maxPort) throw new Error(`No available ports found between ${options.port} and ${maxPort - 1}`)
 
   console.log(`Schematic renderer running on *:${currentPort}`)
-  console.log(`Path list: ${listPath}`)
+  console.log(`Input: ${listPath}`)
   console.log(`Asset root: ${validatedAssets.assetRoot}`)
   console.log(`Output directory: ${outputDir}`)
   console.log(`Scenes: ${assets.length}`)
@@ -578,6 +595,7 @@ module.exports = {
   MAX_PNG_BYTES,
   buildCaptureBasename,
   parseArgs,
+  parseInputList,
   parsePathList,
   persistCapture,
   readPngDimensions,

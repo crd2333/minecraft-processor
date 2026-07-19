@@ -7,6 +7,7 @@ const path = require('path')
 const {
   buildCaptureBasename,
   parseArgs,
+  parseInputList,
   parsePathList,
   persistCapture,
   readPngDimensions,
@@ -49,6 +50,14 @@ async function main () {
 
   const list = parsePathList('\n# keep list readable\ncastle.schem\nfolder\\house.litematic\n')
   assert.deepStrictEqual(list, ['castle.schem', 'folder/house.litematic'])
+  const ratingsCsv = [
+    'asset_path,rating,width,height,length,max_size,block_count,palette_size,reviewed_at',
+    'castle.schem,keep,10,10,10,10,1,1,2026-07-19T00:00:00.000Z',
+    'folder/house.litematic,maybe,10,10,10,10,1,1,2026-07-19T00:00:00.000Z',
+    'functional.schem,functional,10,10,10,10,1,1,2026-07-19T00:00:00.000Z'
+  ].join('\n')
+  assert.deepStrictEqual(parseInputList(ratingsCsv), ['castle.schem'])
+  assert.throws(() => parseInputList(ratingsCsv.replace('castle.schem,keep', 'castle.schem,reject')), /no assets rated keep/)
   assert.throws(() => parsePathList('castle.schem\ncastle.schem\n'), /Duplicate asset path/)
   assert.throws(() => parsePathList('/tmp/out.schem'), /must be relative/)
   assert.strictEqual(sanitizeStem('folder/house with spaces.schem'), 'house_with_spaces')
