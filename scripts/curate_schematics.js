@@ -14,6 +14,7 @@ const VENDORED_VIEWER_PUBLIC_DIR = path.join(STATIC_DIR, 'vendor', 'packages', '
 const VIEWER_RUNTIME_DIR = path.join(PROJECT_ROOT, 'apps/frontend/viewer/src')
 const CURATOR_PUBLIC_DIR = path.join(PROJECT_ROOT, 'apps/frontend/curator/public')
 const CURATOR_SRC_DIR = path.join(PROJECT_ROOT, 'apps/frontend/curator/src')
+const SUPPORTED_ASSET_EXTENSIONS = new Set(['.schem', '.litematic'])
 
 const CSV_COLUMNS = [
   'asset_path',
@@ -98,7 +99,7 @@ function isPathInsideBase (baseDir, targetPath) {
   return !(relative.startsWith('..') || path.isAbsolute(relative))
 }
 
-async function discoverSchemAssets (assetDir) {
+async function discoverCuratableAssets (assetDir) {
   const assets = []
 
   async function walk (dirPath) {
@@ -110,7 +111,7 @@ async function discoverSchemAssets (assetDir) {
         continue
       }
       if (!entry.isFile()) continue
-      if (path.extname(entry.name).toLowerCase() !== '.schem') continue
+      if (!SUPPORTED_ASSET_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue
       assets.push(normalizePathForClient(path.relative(assetDir, fullPath)))
     }
   }
@@ -370,8 +371,8 @@ async function runServer (options) {
   if (!stat || !stat.isDirectory()) throw new Error(`Asset directory does not exist: ${assetDir}`)
 
   const csvPath = path.resolve(process.cwd(), options.output || path.join(assetDir, 'curation-ratings.csv'))
-  const assetPaths = await discoverSchemAssets(assetDir)
-  if (assetPaths.length === 0) throw new Error(`No .schem files found under ${assetDir}`)
+  const assetPaths = await discoverCuratableAssets(assetDir)
+  if (assetPaths.length === 0) throw new Error(`No .schem or .litematic files found under ${assetDir}`)
 
   await ensureBuiltAssets(options.version)
 
@@ -403,7 +404,7 @@ async function runServer (options) {
     if (!isPathInsideBase(assetDir, resolvedPath)) {
       throw new Error(`Asset path must stay within ${assetDir}`)
     }
-    if (path.extname(resolvedPath).toLowerCase() !== '.schem') {
+    if (!SUPPORTED_ASSET_EXTENSIONS.has(path.extname(resolvedPath).toLowerCase())) {
       throw new Error(`Unsupported asset extension: ${path.extname(resolvedPath) || '(none)'}`)
     }
     return resolvedPath
@@ -623,7 +624,7 @@ if (require.main === module) {
 module.exports = {
   ALLOWED_RATINGS,
   CSV_COLUMNS,
-  discoverSchemAssets,
+  discoverCuratableAssets,
   mergeAssetRows,
   parseCsv,
   parseCsvRowsToObjects,

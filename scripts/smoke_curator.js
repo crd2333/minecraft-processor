@@ -6,6 +6,7 @@ const os = require('os')
 const path = require('path')
 const {
   CSV_COLUMNS,
+  discoverCuratableAssets,
   mergeAssetRows,
   parseCsvRowsToObjects,
   selectInitialAsset,
@@ -64,6 +65,18 @@ async function main () {
   assert.throws(() => parseCsvRowsToObjects('wrong,header\n'), /Invalid CSV header/)
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'minecraft-curator-'))
+  const nestedDir = path.join(tempDir, 'nested')
+  await fs.mkdir(nestedDir, { recursive: true })
+  await Promise.all([
+    fs.writeFile(path.join(tempDir, 'first.schem'), ''),
+    fs.writeFile(path.join(nestedDir, 'second.LITEMATIC'), ''),
+    fs.writeFile(path.join(tempDir, 'ignored.txt'), '')
+  ])
+  assert.deepStrictEqual(await discoverCuratableAssets(tempDir), [
+    'first.schem',
+    'nested/second.LITEMATIC'
+  ])
+
   const csvPath = path.join(tempDir, 'nested', 'ratings.csv')
   await writeCsvRowsAtomic(csvPath, merged)
   const persisted = parseCsvRowsToObjects(await fs.readFile(csvPath, 'utf8'))
