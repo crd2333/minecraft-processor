@@ -12,10 +12,10 @@ const {
   loadNativeStructure,
   parseNbtAuto,
   resolveUnifiedParseVersion
-} = require('../src/structure_parser')
-const { loadUnifiedStructure } = require('../src/unified_parser')
-const { defaultViewerVersion, supportedVersions } = require('../src/viewer_versions')
-const { prepareMinewaysObjCache } = require('../src/obj-mesh/build_mesh_cache')
+} = require('../../src/structure_parser')
+const { loadUnifiedStructure } = require('../../src/unified_parser')
+const { defaultViewerVersion, supportedVersions } = require('../../src/viewer_versions')
+const { prepareMinewaysObjCache } = require('../../src/obj-mesh/build_mesh_cache')
 const nbt = require('prismarine-nbt')
 
 function assertViewerVersionSupport () {

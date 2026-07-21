@@ -15,7 +15,7 @@ const {
   scanCaptureState,
   validateAssetEntries,
   validateCapturePayload
-} = require('./render_schematic_list')
+} = require('../render_schematic_list')
 
 function makePngHeader (width, height) {
   const buffer = Buffer.alloc(24)
@@ -28,7 +28,7 @@ function makePngHeader (width, height) {
 
 async function main () {
   const rendererHtml = await fs.readFile(
-    path.join(__dirname, '../apps/frontend/renderer/public/renderer.html'),
+    path.join(__dirname, '../../apps/frontend/renderer/public/renderer.html'),
     'utf8'
   )
   assert.match(rendererHtml, /#square-guide\s*\{[^}]*aspect-ratio:\s*1;[^}]*pointer-events:\s*none;/s)
@@ -38,7 +38,7 @@ async function main () {
   assert.doesNotMatch(rendererHtml, /viewer-hooks\.js|curator\.js/)
 
   const rendererClient = await fs.readFile(
-    path.join(__dirname, '../apps/frontend/renderer/src/client.js'),
+    path.join(__dirname, '../../apps/frontend/renderer/src/client.js'),
     'utf8'
   )
   assert.match(rendererClient, /__captureScreenshot\(\{ square: true, size: size \}\)/)

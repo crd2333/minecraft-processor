@@ -14,11 +14,11 @@ const {
   summarizeRows,
   validateRating,
   writeCsvRowsAtomic
-} = require('./curate_schematics')
+} = require('../curate_schematics')
 
 async function main () {
   const curatorHtml = await fs.readFile(
-    path.join(__dirname, '../apps/frontend/curator/public/curator.html'),
+    path.join(__dirname, '../../apps/frontend/curator/public/curator.html'),
     'utf8'
   )
   assert.match(curatorHtml, /#curator-app\s*\{[^}]*position:\s*fixed;[^}]*pointer-events:\s*none;/s)
@@ -26,7 +26,7 @@ async function main () {
   assert.match(curatorHtml, /#curator-panel\s*\{[^}]*pointer-events:\s*auto;/s)
 
   const curatorClient = await fs.readFile(
-    path.join(__dirname, '../apps/frontend/curator/src/client.js'),
+    path.join(__dirname, '../../apps/frontend/curator/src/client.js'),
     'utf8'
   )
   assert.match(curatorClient, /function renderStructureBoundingBox \(\)/)
