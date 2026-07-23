@@ -28,7 +28,11 @@
     status: document.getElementById('status'),
     loadError: document.getElementById('load-error'),
     previous: document.getElementById('previous-button'),
-    next: document.getElementById('next-button')
+    next: document.getElementById('next-button'),
+    jumpForm: document.getElementById('asset-jump-form'),
+    jumpInput: document.getElementById('asset-number'),
+    jumpTotal: document.getElementById('asset-total'),
+    jumpButton: document.getElementById('jump-button')
   }
 
   function setStatus (message, kind) {
@@ -61,6 +65,10 @@
     elements.progressLabel.textContent = reviewed + ' / ' + total + ' reviewed'
     elements.progressPercent.textContent = percent + '%'
     elements.progressFill.style.width = percent + '%'
+    elements.jumpInput.max = String(rows.length)
+    elements.jumpTotal.textContent = '/ ' + rows.length
+    var currentIndex = rows.findIndex(function (row) { return row.asset_path === currentAsset })
+    elements.jumpInput.value = currentIndex >= 0 ? String(currentIndex + 1) : ''
 
     if (!currentRow) {
       elements.assetName.textContent = 'No asset selected'
@@ -86,6 +94,8 @@
     }
     elements.previous.disabled = busy
     elements.next.disabled = busy
+    elements.jumpInput.disabled = busy || rows.length === 0
+    elements.jumpButton.disabled = busy || rows.length === 0
   }
 
   function setLoadError (message) {
@@ -255,6 +265,22 @@
     return rows[(index + delta + rows.length) % rows.length].asset_path
   }
 
+  function jumpToAsset () {
+    if (busy || !rows.length) return
+    var number = Number(elements.jumpInput.value)
+    if (!Number.isInteger(number) || number < 1 || number > rows.length) {
+      setStatus('Enter an asset number from 1 to ' + rows.length + '.', 'error')
+      elements.jumpInput.select()
+      return
+    }
+    var asset = rows[number - 1].asset_path
+    if (asset === currentAsset) {
+      setStatus('Already viewing asset ' + number + '.', 'success')
+      return
+    }
+    switchAsset(asset)
+  }
+
   function switchAsset (asset) {
     if (!asset || busy || asset === currentAsset) return
     busy = true
@@ -307,6 +333,10 @@
     }
     elements.previous.addEventListener('click', function () { switchAsset(adjacentAsset(-1)) })
     elements.next.addEventListener('click', function () { switchAsset(nextUnratedAsset() || adjacentAsset(1)) })
+    elements.jumpForm.addEventListener('submit', function (event) {
+      event.preventDefault()
+      jumpToAsset()
+    })
 
     document.addEventListener('keydown', function (event) {
       var target = event.target

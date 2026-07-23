@@ -85,6 +85,9 @@
         color: #fff;
         font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
+      .asset-rating { min-height: 18px; color: var(--muted); font-size: 12px; font-weight: 700; }
+      .asset-rating[data-rating="keep"] { color: var(--capture); }
+      .asset-rating[data-rating="maybe"] { color: var(--accent-hover); }
       .stat-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
       .stat {
         min-width: 0;
@@ -96,6 +99,25 @@
       .stat-label { color: var(--muted); font-size: 11px; }
       .stat-value { margin-top: 2px; overflow-wrap: anywhere; font-weight: 700; font-variant-numeric: tabular-nums; }
       .capture-row, .navigation-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .jump-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+      .jump-row label { color: var(--muted); font-size: 12px; }
+      .jump-row input {
+        width: 100%;
+        min-width: 0;
+        min-height: 40px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        background: var(--panel-strong);
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
+      .jump-row input:focus-visible { outline: 3px solid var(--accent-hover); outline-offset: 2px; }
+      .jump-total { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .jump-button { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #2c373d; cursor: pointer; }
+      .jump-button:hover:not(:disabled) { background: #3a474e; border-color: #84929a; }
+      .jump-button:disabled { cursor: not-allowed; opacity: 0.48; }
       .preset-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
       .capture-button, .navigation-button, .preset-button {
         min-height: 44px;
@@ -138,6 +160,7 @@
           <p class="eyebrow">Server capture</p>
           <h1>Schematic Renderer</h1>
           <div id="asset-name" class="asset-name">Loading scene...</div>
+          <div id="asset-rating" class="asset-rating" hidden></div>
           <div class="stat-row">
             <div class="stat"><div class="stat-label">Scene</div><div id="scene-position" class="stat-value">0 / 0</div></div>
             <div class="stat"><div class="stat-label">Saved views</div><div id="capture-count" class="stat-value">0</div></div>
@@ -166,6 +189,12 @@
             <button id="previous-button" class="navigation-button" disabled>Previous Scene</button>
             <button id="next-button" class="navigation-button" disabled>Next Scene</button>
           </div>
+          <form id="asset-jump-form" class="jump-row">
+            <label for="asset-number">Asset</label>
+            <input id="asset-number" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Asset number">
+            <span id="asset-total" class="jump-total" aria-hidden="true">/ 0</span>
+            <button id="jump-button" class="jump-button" type="submit">Go</button>
+          </form>
         </section>
         <div id="status" role="status" aria-live="polite">Connecting...</div>
         <footer><div>Output: <span id="output-directory">--</span></div></footer>

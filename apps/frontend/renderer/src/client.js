@@ -16,6 +16,7 @@
 
   var elements = {
     assetName: document.getElementById('asset-name'),
+    assetRating: document.getElementById('asset-rating'),
     scenePosition: document.getElementById('scene-position'),
     captureCount: document.getElementById('capture-count'),
     structureSize: document.getElementById('structure-size'),
@@ -23,12 +24,25 @@
     outputDirectory: document.getElementById('output-directory'),
     status: document.getElementById('status'),
     previous: document.getElementById('previous-button'),
-    next: document.getElementById('next-button')
+    next: document.getElementById('next-button'),
+    jumpForm: document.getElementById('asset-jump-form'),
+    jumpInput: document.getElementById('asset-number'),
+    jumpTotal: document.getElementById('asset-total'),
+    jumpButton: document.getElementById('jump-button')
   }
 
   function setStatus (message, kind) {
     elements.status.textContent = message || ''
     elements.status.dataset.kind = kind || ''
+  }
+
+  function renderAssetRating (asset) {
+    var rating = asset && asset.rating ? String(asset.rating) : ''
+    elements.assetRating.hidden = !rating
+    elements.assetRating.dataset.rating = rating
+    elements.assetRating.textContent = rating
+      ? 'Curation rating: ' + rating.charAt(0).toUpperCase() + rating.slice(1)
+      : ''
   }
 
   function renderState (state) {
@@ -38,8 +52,12 @@
     currentAsset = assets[currentIndex] || currentAsset
     elements.outputDirectory.textContent = state.outputDir || elements.outputDirectory.textContent || '--'
     elements.assetName.textContent = currentAsset ? currentAsset.path : 'No scene selected'
+    renderAssetRating(currentAsset)
     elements.scenePosition.textContent = currentAsset ? (currentIndex + 1) + ' / ' + assets.length : '0 / ' + assets.length
     elements.captureCount.textContent = currentAsset ? String(currentAsset.captureCount || 0) : '0'
+    elements.jumpInput.max = String(assets.length)
+    elements.jumpTotal.textContent = '/ ' + assets.length
+    elements.jumpInput.value = currentAsset ? String(currentIndex + 1) : ''
     updateControls()
   }
 
@@ -50,6 +68,8 @@
     for (var j = 0; j < presetButtons.length; j++) presetButtons[j].disabled = busy || !currentStructure
     elements.previous.disabled = busy || currentIndex <= 0
     elements.next.disabled = busy || currentIndex < 0 || currentIndex >= assets.length - 1
+    elements.jumpInput.disabled = busy || assets.length === 0
+    elements.jumpButton.disabled = busy || assets.length === 0
   }
 
   function getThree () {
@@ -149,6 +169,22 @@
     })
   }
 
+  function jumpToScene () {
+    if (busy || !assets.length) return
+    var number = Number(elements.jumpInput.value)
+    if (!Number.isInteger(number) || number < 1 || number > assets.length) {
+      setStatus('Enter an asset number from 1 to ' + assets.length + '.', 'error')
+      elements.jumpInput.select()
+      return
+    }
+    var index = number - 1
+    if (index === currentIndex) {
+      setStatus('Already viewing asset ' + number + '.', 'success')
+      return
+    }
+    switchScene(index, false)
+  }
+
   function dataUrlToArrayBuffer (dataUrl) {
     var marker = 'data:image/png;base64,'
     if (typeof dataUrl !== 'string' || dataUrl.slice(0, marker.length) !== marker) {
@@ -241,6 +277,10 @@
     }
     elements.previous.addEventListener('click', function () { switchScene(currentIndex - 1, false) })
     elements.next.addEventListener('click', function () { switchScene(currentIndex + 1, false) })
+    elements.jumpForm.addEventListener('submit', function (event) {
+      event.preventDefault()
+      jumpToScene()
+    })
 
     document.addEventListener('keydown', function (event) {
       var target = event.target

@@ -30,12 +30,13 @@ function showUsage () {
     'Options:',
     '      --asset-root <path>   Base directory for paths in the list (required)',
     '      --output <path>       Server-side capture directory (required)',
+    '      --include-maybe       Include maybe-rated assets when input is a curation CSV',
     '  -v, --version <version>   Minecraft/viewer version (default: ' + defaultViewerVersion + ')',
     '  -p, --port <port>         Preferred port (default: 3200)',
     '  -h, --help                Show this help',
     '',
     'Input:',
-    '  Newline-delimited asset paths, or curation-ratings.csv. For CSV input, only keep-rated assets are rendered.',
+    '  Newline-delimited asset paths, or curation-ratings.csv. For CSV input, only keep-rated assets are rendered by default.',
     '  Asset paths are relative to --asset-root; blank lines and # comments are ignored.'
   ].join('\n'))
 }
@@ -45,6 +46,7 @@ function parseArgs (argv) {
     positional: [],
     assetRoot: null,
     output: null,
+    includeMaybe: false,
     version: defaultViewerVersion,
     port: 3200,
     help: false
@@ -54,6 +56,10 @@ function parseArgs (argv) {
     const arg = argv[i]
     if (arg === '-h' || arg === '--help') {
       result.help = true
+      continue
+    }
+    if (arg === '--include-maybe') {
+      result.includeMaybe = true
       continue
     }
     if (arg === '--asset-root' || arg === '--output' || arg === '-v' || arg === '--version' || arg === '-p' || arg === '--port') {
@@ -104,19 +110,33 @@ function parsePathList (text) {
   return entries
 }
 
-function parseInputList (text) {
+function parseInputSelection (text, options = {}) {
   const input = String(text).replace(/^\uFEFF/, '')
   const firstLine = input.split(/\r?\n/, 1)[0].trim()
-  if (firstLine !== CSV_COLUMNS.join(',')) return parsePathList(input)
+  if (firstLine !== CSV_COLUMNS.join(',')) {
+    return { assetRefs: parsePathList(input), ratingsByPath: new Map() }
+  }
 
   const rows = parseCsvRowsToObjects(input)
+  const acceptedRatings = options.includeMaybe === true ? new Set(['keep', 'maybe']) : new Set(['keep'])
   const acceptedRefs = rows
-    .filter((row) => row.rating === 'keep')
+    .filter((row) => acceptedRatings.has(row.rating))
     .map((row) => row.asset_path)
   if (acceptedRefs.length === 0) {
-    throw new Error('Ratings CSV contains no assets rated keep')
+    throw new Error(options.includeMaybe === true
+      ? 'Ratings CSV contains no assets rated keep or maybe'
+      : 'Ratings CSV contains no assets rated keep')
   }
-  return parsePathList(acceptedRefs.join('\n'))
+  return {
+    assetRefs: parsePathList(acceptedRefs.join('\n')),
+    ratingsByPath: new Map(rows
+      .filter((row) => acceptedRatings.has(row.rating))
+      .map((row) => [normalizeAssetRef(row.asset_path), row.rating]))
+  }
+}
+
+function parseInputList (text, options) {
+  return parseInputSelection(text, options).assetRefs
 }
 
 function isPathInsideBase (baseDir, targetPath) {
@@ -162,6 +182,65 @@ async function validateAssetEntries (assetRoot, assetRefs) {
   return { assetRoot: realRootPath, assets }
 }
 
+async function enrichAssetsWithDescriptions (assetRoot, assets) {
+  const mappingCandidates = [
+    path.join(assetRoot, 'schematics_mapping.json'),
+    path.join(path.dirname(assetRoot), 'schematics_mapping.json')
+  ]
+  let mappingPath = null
+
+  for (const candidate of new Set(mappingCandidates)) {
+    const stat = await fs.stat(candidate).catch((error) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (!stat) continue
+    if (!stat.isFile()) throw new Error(`Schematic mapping is not a file: ${candidate}`)
+    mappingPath = candidate
+    break
+  }
+
+  if (!mappingPath) {
+    return {
+      assets: assets.map((asset) => ({ ...asset, text: null })),
+      mappingPath: null,
+      missingCount: assets.length
+    }
+  }
+
+  let entries
+  try {
+    entries = JSON.parse(await fs.readFile(mappingPath, 'utf8'))
+  } catch (error) {
+    throw new Error(`Failed to read schematic mapping ${mappingPath}: ${error.message}`)
+  }
+  if (!Array.isArray(entries)) throw new Error(`Schematic mapping must contain a JSON array: ${mappingPath}`)
+
+  const descriptions = new Map()
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Invalid schematic mapping entry ${index + 1}: expected an object`)
+    }
+    if (typeof entry.file !== 'string' || entry.file.length === 0) {
+      throw new Error(`Invalid schematic mapping entry ${index + 1}: file must be a non-empty string`)
+    }
+    if (typeof entry.description !== 'string') {
+      throw new Error(`Invalid schematic mapping entry ${index + 1}: description must be a string`)
+    }
+    if (descriptions.has(entry.file)) throw new Error(`Duplicate schematic mapping entry: ${entry.file}`)
+    descriptions.set(entry.file, entry.description)
+  }
+
+  let missingCount = 0
+  const enrichedAssets = assets.map((asset) => {
+    const description = descriptions.get(path.posix.basename(asset.path))
+    if (description === undefined) missingCount++
+    return { ...asset, text: description ?? null }
+  })
+  return { assets: enrichedAssets, mappingPath, missingCount }
+}
+
 function sanitizeStem (assetRef) {
   const source = path.posix.basename(assetRef, path.posix.extname(assetRef))
   const sanitized = source
@@ -182,6 +261,10 @@ function viewLabel (viewIndex) {
 
 function buildCaptureBasename (asset, viewIndex, size) {
   return `${caseLabel(asset.caseIndex)}__${sanitizeStem(asset.path)}__view-${viewLabel(viewIndex)}__${size}`
+}
+
+function buildStructureFilename (asset) {
+  return `${caseLabel(asset.caseIndex)}__${sanitizeStem(asset.path)}${path.posix.extname(asset.path)}`
 }
 
 function captureFilenameMatch (asset, filename) {
@@ -293,9 +376,11 @@ function makeStructureContext (assetPath, structureSize, originWorldPos) {
 async function persistCapture ({ outputDir, captureState, asset, payload }) {
   const imagesDir = path.join(outputDir, 'images')
   const metadataDir = path.join(outputDir, 'metadata')
+  const structuresDir = path.join(outputDir, 'structures')
   const manifestPath = path.join(outputDir, 'manifest.jsonl')
   await fs.mkdir(imagesDir, { recursive: true })
   await fs.mkdir(metadataDir, { recursive: true })
+  await fs.mkdir(structuresDir, { recursive: true })
   const validated = validateCapturePayload(payload, asset)
   const current = captureState.get(asset.path) || { count: 0, maxViewIndex: 0 }
   let viewIndex = current.maxViewIndex + 1
@@ -322,13 +407,18 @@ async function persistCapture ({ outputDir, captureState, asset, payload }) {
 
   const relativeImagePath = path.posix.join('images', basename + '.png')
   const relativeMetadataPath = path.posix.join('metadata', basename + '.json')
+  const relativeStructurePath = path.posix.join('structures', buildStructureFilename(asset))
+  const structurePath = path.join(outputDir, relativeStructurePath)
   const capturedAt = new Date().toISOString()
   const metadata = {
     asset_path: asset.path,
+    text: asset.text ?? null,
+    rating: asset.rating || null,
     case_index: asset.caseIndex,
     view_index: viewIndex,
     image_path: relativeImagePath,
     metadata_path: relativeMetadataPath,
+    structure_path: relativeStructurePath,
     width: validated.size,
     height: validated.size,
     captured_at: capturedAt,
@@ -338,10 +428,21 @@ async function persistCapture ({ outputDir, captureState, asset, payload }) {
   const tempSuffix = `.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
   const tempImagePath = imagePath + tempSuffix
   const tempMetadataPath = metadataPath + tempSuffix
+  const tempStructurePath = structurePath + tempSuffix
   let imageCommitted = false
   let metadataCommitted = false
+  let structureCommitted = false
 
   try {
+    const structureExists = await fs.access(structurePath).then(() => true).catch((error) => {
+      if (error.code === 'ENOENT') return false
+      throw error
+    })
+    if (!structureExists) {
+      await fs.copyFile(asset.resolvedPath, tempStructurePath)
+      await fs.rename(tempStructurePath, structurePath)
+      structureCommitted = true
+    }
     await fs.writeFile(tempImagePath, validated.png, { flag: 'wx' })
     await fs.writeFile(tempMetadataPath, JSON.stringify(metadata, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
     await fs.rename(tempImagePath, imagePath)
@@ -353,8 +454,10 @@ async function persistCapture ({ outputDir, captureState, asset, payload }) {
     await Promise.all([
       fs.rm(tempImagePath, { force: true }),
       fs.rm(tempMetadataPath, { force: true }),
+      fs.rm(tempStructurePath, { force: true }),
       imageCommitted ? fs.rm(imagePath, { force: true }) : Promise.resolve(),
-      metadataCommitted ? fs.rm(metadataPath, { force: true }) : Promise.resolve()
+      metadataCommitted ? fs.rm(metadataPath, { force: true }) : Promise.resolve(),
+      structureCommitted ? fs.rm(structurePath, { force: true }) : Promise.resolve()
     ]).catch(() => {})
     throw error
   }
@@ -369,9 +472,19 @@ async function runServer (options) {
     if (error.code === 'ENOENT') throw new Error(`Path list does not exist: ${listPath}`)
     throw error
   })
-  const assetRefs = parseInputList(listText)
-  const validatedAssets = await validateAssetEntries(options.assetRoot, assetRefs)
-  const assets = validatedAssets.assets
+  const inputSelection = parseInputSelection(listText, { includeMaybe: options.includeMaybe })
+  const validatedAssets = await validateAssetEntries(options.assetRoot, inputSelection.assetRefs)
+  const ratedAssets = validatedAssets.assets.map((asset) => ({
+    ...asset,
+    rating: inputSelection.ratingsByPath.get(asset.path) || null
+  }))
+  const descriptionResult = await enrichAssetsWithDescriptions(validatedAssets.assetRoot, ratedAssets)
+  const assets = descriptionResult.assets
+  if (!descriptionResult.mappingPath) {
+    console.warn('schematics_mapping.json was not found; capture metadata text will be null')
+  } else if (descriptionResult.missingCount > 0) {
+    console.warn(`${descriptionResult.missingCount} asset(s) have no description in ${descriptionResult.mappingPath}`)
+  }
   const outputDir = path.resolve(process.cwd(), options.output)
   const imagesDir = path.join(outputDir, 'images')
   const metadataDir = path.join(outputDir, 'metadata')
@@ -398,7 +511,13 @@ async function runServer (options) {
 
   function publicAsset (asset) {
     const state = captureState.get(asset.path) || { count: 0 }
-    return { index: asset.index, caseIndex: asset.caseIndex, path: asset.path, captureCount: state.count }
+    return {
+      index: asset.index,
+      caseIndex: asset.caseIndex,
+      path: asset.path,
+      rating: asset.rating,
+      captureCount: state.count
+    }
   }
 
   function publicState () {
@@ -578,6 +697,7 @@ async function main () {
     listPath: args.positional[0],
     assetRoot: args.assetRoot,
     output: args.output,
+    includeMaybe: args.includeMaybe,
     version: args.version,
     port: args.port
   })
@@ -594,8 +714,11 @@ module.exports = {
   ALLOWED_CAPTURE_SIZES,
   MAX_PNG_BYTES,
   buildCaptureBasename,
+  buildStructureFilename,
+  enrichAssetsWithDescriptions,
   parseArgs,
   parseInputList,
+  parseInputSelection,
   parsePathList,
   persistCapture,
   readPngDimensions,

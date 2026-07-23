@@ -117,6 +117,25 @@
       .rating-button[data-rating="functional"][aria-pressed="true"] { background: var(--functional); }
       .rating-button[data-rating="reject"][aria-pressed="true"] { background: var(--reject); }
       .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .jump-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
+      .jump-row label { color: var(--muted); font-size: 12px; }
+      .jump-row input {
+        width: 100%;
+        min-width: 0;
+        min-height: 40px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        background: var(--panel-strong);
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
+      .jump-row input:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 2px; }
+      .jump-total { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .jump-button { min-height: 40px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #2b3740; cursor: pointer; }
+      .jump-button:hover:not(:disabled) { background: #35434d; border-color: #71818b; }
+      .jump-button:disabled { cursor: not-allowed; opacity: 0.48; }
       .preset-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
       .small-note { color: var(--muted); font-size: 12px; }
       #status { min-height: 20px; color: var(--muted); font-size: 12px; }
@@ -199,6 +218,12 @@
             <button id="previous-button" class="secondary-button">Previous</button>
             <button id="next-button" class="secondary-button">Next unrated</button>
           </div>
+          <form id="asset-jump-form" class="jump-row">
+            <label for="asset-number">Asset</label>
+            <input id="asset-number" type="number" min="1" step="1" inputmode="numeric" value="1" aria-label="Asset number">
+            <span id="asset-total" class="jump-total" aria-hidden="true">/ 0</span>
+            <button id="jump-button" class="jump-button" type="submit">Go</button>
+          </form>
           <div class="preset-row">
             <button class="preset-button" data-preset="front">Front <kbd>1</kbd></button>
             <button class="preset-button" data-preset="rear">Rear <kbd>2</kbd></button>

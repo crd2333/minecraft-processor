@@ -31,6 +31,9 @@ async function main () {
   )
   assert.match(curatorClient, /function renderStructureBoundingBox \(\)/)
   assert.match(curatorClient, /curatorStructureBoundingBox/)
+  assert.match(curatorHtml, /id="asset-jump-form"/)
+  assert.match(curatorHtml, /id="asset-number"[^>]*type="number"/)
+  assert.match(curatorClient, /function jumpToAsset \(\)/)
 
   const rows = mergeAssetRows([
     'plain.schem',
