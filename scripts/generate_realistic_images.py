@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -306,6 +307,14 @@ def request_with_retries(operation, retries, api_key, label):
     raise AssertionError("retry loop exhausted unexpectedly")
 
 
+def require_image_count(images, requested, provider):
+    if len(images) != requested:
+        raise RequestFailure(
+            f"{provider} returned {len(images)} image(s), expected {requested}"
+        )
+    return images
+
+
 def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation, timeout):
     generation_config = {"responseModalities": ["TEXT", "IMAGE"]}
     image_config = {}
@@ -313,6 +322,8 @@ def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation,
         image_config["imageSize"] = generation["imageSize"]
     if generation["aspectRatio"] != "auto":
         image_config["aspectRatio"] = generation["aspectRatio"]
+    if generation["numImages"] > 1:
+        generation_config["candidateCount"] = generation["numImages"]
     if image_config:
         generation_config["imageConfig"] = image_config
 
@@ -350,6 +361,7 @@ def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation,
     response = parse_json_response(response_data, "Gemini")
 
     text_parts = []
+    images = []
     for candidate in response.get("candidates") or []:
         if not isinstance(candidate, dict):
             continue
@@ -365,12 +377,16 @@ def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation,
             encoded = inline.get("data")
             declared_mime = inline.get("mimeType") or inline.get("mime_type")
             if encoded:
-                return normalize_generated_image(
-                    decode_base64_image(encoded),
-                    declared_mime,
-                    "\n".join(text_parts).strip(),
+                images.append(
+                    normalize_generated_image(
+                        decode_base64_image(encoded),
+                        declared_mime,
+                        "\n".join(text_parts).strip(),
+                    )
                 )
 
+    if images:
+        return require_image_count(images, generation["numImages"], "Gemini")
     details = "\n".join(text_parts).strip()
     suffix = f" Provider text: {details[:500]}" if details else ""
     raise RequestFailure(f"Gemini response did not contain an image part.{suffix}")
@@ -399,7 +415,7 @@ def build_openai_multipart(model, prompt, image_name, image_data, mime_type, gen
     body = bytearray()
     body += multipart_field(boundary, "model", model)
     body += multipart_field(boundary, "prompt", prompt)
-    body += multipart_field(boundary, "n", "1")
+    body += multipart_field(boundary, "n", str(generation["numImages"]))
     body += multipart_field(boundary, "size", generation["size"])
     body += multipart_field(boundary, "quality", generation["quality"])
     body += multipart_field(boundary, "output_format", generation["outputFormat"])
@@ -421,24 +437,36 @@ def fetch_result_url(url, timeout):
     return normalize_generated_image(data, content_type)
 
 
-def openai_response_image(payload, timeout):
+def openai_response_images(payload, timeout, requested):
     items = payload.get("data")
     if not isinstance(items, list) or not items:
-        raise RequestFailure("OpenAI-compatible response is missing data[0]")
-    item = items[0]
-    if not isinstance(item, dict):
-        raise RequestFailure("OpenAI-compatible response data[0] is not an object")
+        raise RequestFailure("OpenAI-compatible response is missing data")
 
-    for key in ("b64_json", "base64", "image_base64"):
-        if item.get(key):
-            return normalize_generated_image(decode_base64_image(item[key]))
+    images = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise RequestFailure(f"OpenAI-compatible response data[{index - 1}] is not an object")
 
-    image_url = item.get("url") or item.get("image_url")
-    if isinstance(image_url, dict):
-        image_url = image_url.get("url")
-    if image_url:
-        return fetch_result_url(image_url, timeout)
-    raise RequestFailure("OpenAI-compatible response contains neither base64 image data nor an image URL")
+        image = None
+        for key in ("b64_json", "base64", "image_base64"):
+            if item.get(key):
+                image = normalize_generated_image(decode_base64_image(item[key]))
+                break
+
+        if image is None:
+            image_url = item.get("url") or item.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            if image_url:
+                image = fetch_result_url(image_url, timeout)
+        if image is None:
+            raise RequestFailure(
+                f"OpenAI-compatible response data[{index - 1}] contains neither "
+                "base64 image data nor an image URL"
+            )
+        images.append(image)
+
+    return require_image_count(images, requested, "OpenAI-compatible API")
 
 
 def openai_request(
@@ -459,7 +487,11 @@ def openai_request(
         },
     )
     response_data, _ = perform_request(request, timeout, api_key)
-    return openai_response_image(parse_json_response(response_data, "OpenAI-compatible API"), timeout)
+    return openai_response_images(
+        parse_json_response(response_data, "OpenAI-compatible API"),
+        timeout,
+        generation["numImages"],
+    )
 
 
 def is_within(path, parent):
@@ -512,7 +544,26 @@ def output_base(output_dir, relative_path):
 
 
 def output_candidates(base_path):
-    return [base_path.with_suffix(extension) for extension in OUTPUT_EXTENSIONS.values()]
+    candidates = [base_path.with_suffix(extension) for extension in OUTPUT_EXTENSIONS.values()]
+    if base_path.parent.exists():
+        for extension in OUTPUT_EXTENSIONS.values():
+            pattern = re.compile(
+                rf"^{re.escape(base_path.name)}__\d+{re.escape(extension)}$"
+            )
+            candidates.extend(
+                path
+                for path in base_path.parent.glob(f"{base_path.name}__*{extension}")
+                if pattern.fullmatch(path.name)
+            )
+    return sorted(set(candidates))
+
+
+def numbered_output_path(base_path, index, total, mime_type):
+    extension = OUTPUT_EXTENSIONS[mime_type]
+    if total == 1:
+        return base_path.with_suffix(extension)
+    width = max(2, len(str(total)))
+    return base_path.parent / f"{base_path.name}__{index:0{width}d}{extension}"
 
 
 def atomic_write_bytes(path, data):
@@ -553,23 +604,36 @@ def completion_matches(
         return False
     source = metadata.get("source") or {}
     request = metadata.get("request") or {}
-    output = metadata.get("output") or {}
+    recorded_generation = dict(request.get("generation") or {})
+    recorded_generation.setdefault("numImages", 1)
     if (
         source.get("sha256") != source_sha256
         or request.get("promptSha256") != prompt_sha256
         or request.get("provider") != provider
         or request.get("model") != model
         or request.get("endpoint") != redact_url(endpoint)
-        or request.get("generation") != generation
+        or recorded_generation != generation
     ):
         return False
-    relative_output = output.get("path")
-    if not isinstance(relative_output, str):
+
+    outputs = metadata.get("outputs")
+    if not isinstance(outputs, list):
+        legacy_output = metadata.get("output")
+        outputs = [legacy_output] if isinstance(legacy_output, dict) else []
+    if len(outputs) != generation["numImages"]:
         return False
-    output_path = (Path(output_dir).resolve() / relative_output).resolve()
-    if not is_within(output_path, output_dir) or not output_path.is_file():
-        return False
-    return output.get("sha256") == sha256_file(output_path)
+    for output in outputs:
+        if not isinstance(output, dict):
+            return False
+        relative_output = output.get("path")
+        if not isinstance(relative_output, str):
+            return False
+        output_path = (Path(output_dir).resolve() / relative_output).resolve()
+        if not is_within(output_path, output_dir) or not output_path.is_file():
+            return False
+        if output.get("sha256") != sha256_file(output_path):
+            return False
+    return True
 
 
 def existing_artifacts(base_path):
@@ -577,9 +641,10 @@ def existing_artifacts(base_path):
     return [path for path in [metadata_path, *output_candidates(base_path)] if path.exists()]
 
 
-def remove_stale_images(base_path, keep_path):
+def remove_stale_images(base_path, keep_paths):
+    keep_paths = set(keep_paths)
     for candidate in output_candidates(base_path):
-        if candidate != keep_path and candidate.exists():
+        if candidate not in keep_paths and candidate.exists():
             candidate.unlink()
 
 
@@ -652,6 +717,8 @@ def resolve_config(args):
             raise ValueError(f"Unsupported Gemini aspect ratio: {aspect_ratio}")
         generation = {"imageSize": size, "aspectRatio": aspect_ratio}
 
+    generation["numImages"] = args.num_images
+
     return {
         "provider": args.provider,
         "base_url": base_url,
@@ -723,15 +790,27 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
         return "planned", metadata_path
 
     started_at = utc_now()
-    result, attempts = request_with_retries(
+    results, attempts = request_with_retries(
         lambda: generate_one(config, prompt, source_path, source_data, mime_type, args.timeout),
         args.retries,
         config["api_key"],
         relative_path.as_posix(),
     )
-    extension = OUTPUT_EXTENSIONS[result.mime_type]
-    image_path = base_path.with_suffix(extension)
-    atomic_write_bytes(image_path, result.data)
+    image_paths = []
+    output_records = []
+    for index, result in enumerate(results, start=1):
+        image_path = numbered_output_path(base_path, index, len(results), result.mime_type)
+        atomic_write_bytes(image_path, result.data)
+        image_paths.append(image_path)
+        output_records.append(
+            {
+                "index": index,
+                "path": relative_output_path(image_path, output_dir),
+                "mimeType": result.mime_type,
+                "sha256": sha256_bytes(result.data),
+                "bytes": len(result.data),
+            }
+        )
 
     payload = {
         "format": TOOL_FORMAT,
@@ -754,18 +833,16 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
             "prompt": prompt,
             "attempts": attempts,
         },
-        "output": {
-            "path": relative_output_path(image_path, output_dir),
-            "mimeType": result.mime_type,
-            "sha256": sha256_bytes(result.data),
-            "bytes": len(result.data),
-        },
+        "outputs": output_records,
     }
-    if result.provider_text:
-        payload["response"] = {"text": result.provider_text}
+    if len(output_records) == 1:
+        payload["output"] = output_records[0]
+    provider_texts = [result.provider_text for result in results]
+    if any(provider_texts):
+        payload["response"] = {"texts": provider_texts}
     atomic_write_json(metadata_path, payload)
-    remove_stale_images(base_path, image_path)
-    return "generated", image_path
+    remove_stale_images(base_path, image_paths)
+    return "generated", image_paths
 
 
 def build_parser():
@@ -811,6 +888,18 @@ def build_parser():
     parser.add_argument("--overwrite", action="store_true", help="Replace existing output artifacts")
     parser.add_argument("--dry-run", action="store_true", help="Validate and list work without requiring a key or calling an API")
     parser.add_argument("--limit", type=int, help="Process at most the first N discovered images")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Maximum in-flight cases (default: 1)",
+    )
+    parser.add_argument(
+        "--num-images",
+        type=int,
+        default=1,
+        help="Images requested per case, from 1 to 8 (default: 1)",
+    )
     parser.add_argument("--timeout", type=float, default=300.0, help="Per-request timeout in seconds (default: 300)")
     parser.add_argument("--retries", type=int, default=2, help="Retries after transient failures (default: 2)")
     return parser
@@ -823,6 +912,10 @@ def validate_args(args):
         raise ValueError("--timeout must be positive")
     if args.retries < 0:
         raise ValueError("--retries cannot be negative")
+    if args.concurrency <= 0 or args.concurrency > 64:
+        raise ValueError("--concurrency must be between 1 and 64")
+    if args.num_images <= 0 or args.num_images > 8:
+        raise ValueError("--num-images must be between 1 and 8")
 
 
 def run(args):
@@ -836,39 +929,87 @@ def run(args):
     print(f"Provider: {config['provider']} / {config['model']}")
     print(f"Endpoint: {redact_url(config['endpoint'])}")
     print("Generation: " + ", ".join(f"{key}={value}" for key, value in config["generation"].items()))
+    print(f"Concurrency: {args.concurrency}")
     print(f"Prompt: {prompt_path} ({prompt_sha256[:12]})")
     print(f"Images: {len(images)}")
     if args.dry_run:
         print("Mode: dry-run (no API requests will be sent)")
 
-    counts = {"generated": 0, "skipped": 0, "planned": 0, "failed": 0}
-    for index, (source_path, relative_path) in enumerate(images, start=1):
+    counts = {"generated": 0, "skipped": 0, "planned": 0, "failed": 0, "output_images": 0}
+
+    def execute_case(source_path, relative_path):
+        return process_case(
+            args,
+            config,
+            prompt_path,
+            prompt,
+            prompt_sha256,
+            output_dir,
+            source_path,
+            relative_path,
+        )
+
+    def report_case(index, relative_path, outcome=None, error=None):
         label = f"[{index}/{len(images)}] {relative_path.as_posix()}"
-        try:
-            status, result_path = process_case(
-                args,
-                config,
-                prompt_path,
-                prompt,
-                prompt_sha256,
-                output_dir,
-                source_path,
-                relative_path,
-            )
-            counts[status] += 1
-            if status == "planned":
-                base_path = output_base(output_dir, relative_path)
-                print(f"{label}: planned -> {base_path.name}.*")
-            else:
-                print(f"{label}: {status} -> {result_path}")
-        except Exception as error:
+        if error is not None:
             counts["failed"] += 1
             print(f"{label}: failed: {redact_text(error, config['api_key'])}", file=sys.stderr)
+            return
+        status, result = outcome
+        counts[status] += 1
+        if status == "planned":
+            base_path = output_base(output_dir, relative_path)
+            suffix = ".*" if args.num_images == 1 else f"__01..{args.num_images:02d}.*"
+            print(f"{label}: planned {args.num_images} image(s) -> {base_path.name}{suffix}")
+        elif status == "generated":
+            counts["output_images"] += len(result)
+            print(f"{label}: generated {len(result)} image(s) -> {result[0].parent}")
+        else:
+            print(f"{label}: {status} -> {result}")
+
+    indexed_images = [
+        (index, source_path, relative_path)
+        for index, (source_path, relative_path) in enumerate(images, start=1)
+    ]
+    if args.dry_run or args.concurrency == 1:
+        for index, source_path, relative_path in indexed_images:
+            try:
+                report_case(index, relative_path, execute_case(source_path, relative_path))
+            except Exception as error:
+                report_case(index, relative_path, error=error)
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            image_iterator = iter(indexed_images)
+            futures = {}
+
+            def submit_next_case():
+                try:
+                    index, source_path, relative_path = next(image_iterator)
+                except StopIteration:
+                    return False
+                futures[executor.submit(execute_case, source_path, relative_path)] = (
+                    index,
+                    relative_path,
+                )
+                return True
+
+            for _ in range(min(args.concurrency, len(indexed_images))):
+                submit_next_case()
+            while futures:
+                completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    index, relative_path = futures.pop(future)
+                    try:
+                        report_case(index, relative_path, future.result())
+                    except Exception as error:
+                        report_case(index, relative_path, error=error)
+                    submit_next_case()
 
     print(
         "Summary: "
         f"generated={counts['generated']} skipped={counts['skipped']} "
-        f"planned={counts['planned']} failed={counts['failed']}"
+        f"planned={counts['planned']} failed={counts['failed']} "
+        f"output_images={counts['output_images']}"
     )
     return 1 if counts["failed"] else 0
 

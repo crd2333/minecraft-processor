@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from email import policy
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,7 +25,9 @@ PNG_BYTES = base64.b64decode(
 
 class FakeApiHandler(BaseHTTPRequestHandler):
     calls = []
-    image_requests = 0
+    lock = threading.Lock()
+    active_openai_requests = 0
+    max_active_openai_requests = 0
 
     def log_message(self, *_args):
         return
@@ -62,6 +66,7 @@ class FakeApiHandler(BaseHTTPRequestHandler):
                 "imageSize": "2K",
                 "aspectRatio": "16:9",
             }
+            assert payload["generationConfig"]["candidateCount"] == 2
             encoded = base64.b64encode(PNG_BYTES).decode("ascii")
             self.send_json(
                 {
@@ -73,38 +78,59 @@ class FakeApiHandler(BaseHTTPRequestHandler):
                                     {"inlineData": {"mimeType": "image/png", "data": encoded}},
                                 ]
                             }
-                        }
+                        },
+                        {
+                            "content": {
+                                "parts": [
+                                    {"inlineData": {"mimeType": "image/png", "data": encoded}}
+                                ]
+                            }
+                        },
                     ]
                 }
             )
             return
 
         if self.path.endswith("/images/edits"):
-            assert self.headers.get("Authorization") == "Bearer openai-test-key"
-            content_type = self.headers.get("Content-Type")
-            header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
-            message = BytesParser(policy=policy.default).parsebytes(header + body)
-            fields = {}
-            file_data = None
-            for part in message.iter_parts():
-                name = part.get_param("name", header="content-disposition")
-                if name == "image":
-                    file_data = part.get_payload(decode=True)
-                elif name:
-                    fields[name] = (part.get_payload(decode=True) or b"").decode()
-            assert fields["model"] == "fake-image-model"
-            assert fields["n"] == "1"
-            assert fields["size"] == "auto"
-            assert fields["quality"] == "high"
-            assert fields["output_format"] == "png"
-            assert fields["prompt"]
-            assert file_data == PNG_BYTES
-            FakeApiHandler.image_requests += 1
-            if FakeApiHandler.image_requests == 1:
+            with FakeApiHandler.lock:
+                FakeApiHandler.active_openai_requests += 1
+                FakeApiHandler.max_active_openai_requests = max(
+                    FakeApiHandler.max_active_openai_requests,
+                    FakeApiHandler.active_openai_requests,
+                )
+            try:
+                assert self.headers.get("Authorization") == "Bearer openai-test-key"
+                content_type = self.headers.get("Content-Type")
+                header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+                message = BytesParser(policy=policy.default).parsebytes(header + body)
+                fields = {}
+                file_data = None
+                for part in message.iter_parts():
+                    name = part.get_param("name", header="content-disposition")
+                    if name == "image":
+                        file_data = part.get_payload(decode=True)
+                    elif name:
+                        fields[name] = (part.get_payload(decode=True) or b"").decode()
+                assert fields["model"] == "fake-image-model"
+                assert fields["n"] == "2"
+                assert fields["size"] == "auto"
+                assert fields["quality"] == "high"
+                assert fields["output_format"] == "png"
+                assert fields["prompt"]
+                assert file_data == PNG_BYTES
+                time.sleep(0.1)
                 encoded = base64.b64encode(PNG_BYTES).decode("ascii")
-                self.send_json({"data": [{"b64_json": encoded}]})
-            else:
-                self.send_json({"data": [{"url": f"http://127.0.0.1:{self.server.server_port}/generated.png"}]})
+                self.send_json(
+                    {
+                        "data": [
+                            {"b64_json": encoded},
+                            {"url": f"http://127.0.0.1:{self.server.server_port}/generated.png"},
+                        ]
+                    }
+                )
+            finally:
+                with FakeApiHandler.lock:
+                    FakeApiHandler.active_openai_requests -= 1
             return
 
         self.send_error(404)
@@ -125,20 +151,24 @@ def run_cli(args, env):
     return result.stdout, result.stderr
 
 
-def assert_generated_metadata(output_dir, expected_count, provider, model, generation):
+def assert_generated_metadata(output_dir, expected_cases, expected_images, provider, model, generation):
     metadata = sorted(Path(output_dir).rglob("*.json"))
     images = sorted(
         path
         for path in Path(output_dir).rglob("*")
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
     )
-    assert len(metadata) == expected_count, metadata
-    assert len(images) == expected_count, images
+    assert len(metadata) == expected_cases, metadata
+    assert len(images) == expected_images, images
     for path in metadata:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["request"]["provider"] == provider
         assert payload["request"]["model"] == model
         assert payload["request"]["generation"] == generation
+        assert len(payload["outputs"]) == generation["numImages"]
+        if generation["numImages"] > 1:
+            assert payload["outputs"][0]["path"].endswith("__01.png")
+            assert payload["outputs"][1]["path"].endswith("__02.png")
         assert "gemini-test-key" not in path.read_text(encoding="utf-8")
         assert "openai-test-key" not in path.read_text(encoding="utf-8")
 
@@ -146,8 +176,6 @@ def assert_generated_metadata(output_dir, expected_count, provider, model, gener
 def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeApiHandler)
     port = server.server_port
-    import threading
-
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -178,6 +206,8 @@ def main():
                     "2K",
                     "--aspect-ratio",
                     "16:9",
+                    "--num-images",
+                    "2",
                     "--api-key",
                     "gemini-test-key",
                     "--prompt-file",
@@ -193,9 +223,10 @@ def main():
             assert_generated_metadata(
                 gemini_output,
                 1,
+                2,
                 "gemini",
                 "fake-gemini-model",
-                {"imageSize": "2K", "aspectRatio": "16:9"},
+                {"imageSize": "2K", "aspectRatio": "16:9", "numImages": 2},
             )
 
             openai_output = root / "openai-output"
@@ -215,18 +246,30 @@ def main():
                     "--output",
                     openai_output,
                     "--recursive",
+                    "--concurrency",
+                    "2",
+                    "--num-images",
+                    "2",
                     "--retries",
                     "0",
                 ],
                 common_env,
             )
             assert "generated=2" in stdout
+            assert "output_images=4" in stdout
+            assert FakeApiHandler.max_active_openai_requests >= 2
             assert_generated_metadata(
                 openai_output,
                 2,
+                4,
                 "openai",
                 "fake-image-model",
-                {"size": "auto", "quality": "high", "outputFormat": "png"},
+                {
+                    "size": "auto",
+                    "quality": "high",
+                    "outputFormat": "png",
+                    "numImages": 2,
+                },
             )
             call_count = len(FakeApiHandler.calls)
 
@@ -246,6 +289,10 @@ def main():
                     "--output",
                     openai_output,
                     "--recursive",
+                    "--concurrency",
+                    "2",
+                    "--num-images",
+                    "2",
                     "--retries",
                     "0",
                 ],
@@ -270,6 +317,8 @@ def main():
                     dry_output,
                     "--recursive",
                     "--dry-run",
+                    "--num-images",
+                    "2",
                 ],
                 common_env,
             )
