@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const fs = require('fs').promises
+const { createWriteStream } = require('fs')
+const { once } = require('events')
 const path = require('path')
 const { buildStructureMesh } = require('../src/structure_mesh')
 const { defaultViewerVersion } = require('../src/viewer_versions')
@@ -10,12 +12,27 @@ const BUFFER_FILES = {
   indices: 'indices.u32'
 }
 
+const SUPPORTED_EXTENSIONS = new Set([
+  '.schem',
+  '.schematic',
+  '.litematic',
+  '.nbt',
+  '.mcstructure'
+])
+
 function showUsage () {
   console.log([
     'Usage:',
-    '  node scripts/export_structure_mesh.js <structure-file> --output-dir <directory> [--version <mc-version>]',
+    '  node scripts/export_structure_mesh.js <structure-file-or-directory> --output-dir <directory> [options]',
     '',
-    'Writes a headless indexed triangle mesh as positions.f32, indices.u32, and mesh.json.'
+    'Options:',
+    '  -v, --version <mc-version>  Minecraft target version',
+    '      --format <format>       buffers (default) | ply',
+    '      --normalize             Center and scale PLY vertices to [-0.5, 0.5]',
+    '      --resume                Skip existing non-empty PLY outputs',
+    '',
+    'The default buffers format writes positions.f32, indices.u32, and mesh.json for one input file.',
+    'PLY output contains only vertex positions and triangle vertex indices. Directory input is recursive.'
   ].join('\n'))
 }
 
@@ -24,6 +41,9 @@ function parseArgs (argv) {
     positional: [],
     outputDir: null,
     version: defaultViewerVersion,
+    format: 'buffers',
+    normalize: false,
+    resume: false,
     help: false
   }
 
@@ -43,6 +63,19 @@ function parseArgs (argv) {
       result.version = argv[++i]
       continue
     }
+    if (arg === '--format') {
+      if (!argv[i + 1]) throw new Error('Missing value for --format')
+      result.format = argv[++i]
+      continue
+    }
+    if (arg === '--normalize') {
+      result.normalize = true
+      continue
+    }
+    if (arg === '--resume') {
+      result.resume = true
+      continue
+    }
     if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`)
     result.positional.push(arg)
   }
@@ -54,8 +87,169 @@ function typedArrayToBuffer (array) {
   return Buffer.from(array.buffer, array.byteOffset, array.byteLength)
 }
 
-async function main () {
-  const args = parseArgs(process.argv.slice(2))
+async function discoverInputs (inputPath) {
+  const stat = await fs.stat(inputPath)
+  if (stat.isFile()) {
+    if (!SUPPORTED_EXTENSIONS.has(path.extname(inputPath).toLowerCase())) {
+      throw new Error(`Unsupported structure extension: ${path.extname(inputPath) || '(none)'}`)
+    }
+    return { root: path.dirname(inputPath), inputs: [inputPath], directoryMode: false }
+  }
+  if (!stat.isDirectory()) throw new Error(`Input path is neither a file nor directory: ${inputPath}`)
+
+  const inputs = []
+  async function visit (directory) {
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const childPath = path.join(directory, entry.name)
+      if (entry.isDirectory()) await visit(childPath)
+      else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) inputs.push(childPath)
+    }
+  }
+
+  await visit(inputPath)
+  if (inputs.length === 0) throw new Error(`No supported structure files found under: ${inputPath}`)
+  inputs.sort((a, b) => path.relative(inputPath, a).localeCompare(path.relative(inputPath, b)))
+  return { root: inputPath, inputs, directoryMode: true }
+}
+
+function normalizationTransform (positions) {
+  if (positions.length === 0) throw new Error('Cannot normalize an empty mesh')
+
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  for (let index = 0; index < positions.length; index += 3) {
+    for (let axis = 0; axis < 3; axis++) {
+      const value = positions[index + axis]
+      if (!Number.isFinite(value)) throw new Error(`Mesh contains a non-finite vertex at scalar index ${index + axis}`)
+      min[axis] = Math.min(min[axis], value)
+      max[axis] = Math.max(max[axis], value)
+    }
+  }
+
+  const center = min.map((value, axis) => (value + max[axis]) / 2)
+  const maxExtent = Math.max(...max.map((value, axis) => value - min[axis]))
+  if (!Number.isFinite(maxExtent) || maxExtent <= 0) throw new Error(`Cannot normalize a degenerate mesh with extent ${maxExtent}`)
+
+  return { center, scale: maxExtent }
+}
+
+function formatCoordinate (value) {
+  return Number(value).toString()
+}
+
+function makePlyHeader (positions, indices) {
+  if (indices.length % 3 !== 0) throw new Error(`Mesh index count ${indices.length} is not divisible by 3`)
+  const vertexCount = positions.length / 3
+  const faceCount = indices.length / 3
+  return [
+    'ply',
+    'format ascii 1.0',
+    'comment indexed triangle mesh generated by minecraft-processor',
+    `element vertex ${vertexCount}`,
+    'property float x',
+    'property float y',
+    'property float z',
+    `element face ${faceCount}`,
+    'property list uchar uint vertex_indices',
+    'end_header',
+    ''
+  ].join('\n')
+}
+
+async function writeChunk (stream, text) {
+  if (!stream.write(text)) await once(stream, 'drain')
+}
+
+async function writePlyAtomic (outputPath, positions, indices, normalize) {
+  if (indices.length % 3 !== 0) throw new Error(`Mesh index count ${indices.length} is not divisible by 3`)
+  await fs.mkdir(path.dirname(outputPath), { recursive: true })
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath)}.${process.pid}.${Date.now()}.tmp`
+  )
+  const transform = normalize ? normalizationTransform(positions) : null
+  const stream = createWriteStream(temporaryPath, { encoding: 'utf8' })
+
+  try {
+    await writeChunk(stream, makePlyHeader(positions, indices))
+    const lines = []
+    for (let index = 0; index < positions.length; index += 3) {
+      const x = transform ? (positions[index] - transform.center[0]) / transform.scale : positions[index]
+      const y = transform ? (positions[index + 1] - transform.center[1]) / transform.scale : positions[index + 1]
+      const z = transform ? (positions[index + 2] - transform.center[2]) / transform.scale : positions[index + 2]
+      lines.push(`${formatCoordinate(x)} ${formatCoordinate(y)} ${formatCoordinate(z)}\n`)
+      if (lines.length === 8192) {
+        await writeChunk(stream, lines.join(''))
+        lines.length = 0
+      }
+    }
+    if (lines.length > 0) {
+      await writeChunk(stream, lines.join(''))
+      lines.length = 0
+    }
+
+    for (let index = 0; index < indices.length; index += 3) {
+      lines.push(`3 ${indices[index]} ${indices[index + 1]} ${indices[index + 2]}\n`)
+      if (lines.length === 8192) {
+        await writeChunk(stream, lines.join(''))
+        lines.length = 0
+      }
+    }
+    if (lines.length > 0) await writeChunk(stream, lines.join(''))
+
+    await new Promise((resolve, reject) => {
+      stream.once('error', reject)
+      stream.end(resolve)
+    })
+    await fs.rename(temporaryPath, outputPath)
+  } catch (error) {
+    stream.destroy()
+    await fs.rm(temporaryPath, { force: true })
+    throw error
+  }
+}
+
+async function hasCompletedPly (outputPath) {
+  try {
+    const stat = await fs.stat(outputPath)
+    return stat.isFile() && stat.size > 0
+  } catch (error) {
+    if (error.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+function plyOutputPath (inputPath, inputRoot, outputDir, directoryMode) {
+  const relativePath = directoryMode ? path.relative(inputRoot, inputPath) : path.basename(inputPath)
+  return path.join(outputDir, `${relativePath.slice(0, -path.extname(relativePath).length)}.ply`)
+}
+
+async function writeBufferMesh (mesh, outputDir) {
+  const metadata = {
+    ...mesh.metadata,
+    buffers: BUFFER_FILES
+  }
+  await fs.mkdir(outputDir, { recursive: true })
+  await fs.writeFile(path.join(outputDir, BUFFER_FILES.positions), typedArrayToBuffer(mesh.positions))
+  await fs.writeFile(path.join(outputDir, BUFFER_FILES.indices), typedArrayToBuffer(mesh.indices))
+  await fs.writeFile(path.join(outputDir, 'mesh.json'), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
+  return metadata
+}
+
+function assertNoPlyCollisions (inputs, inputRoot, outputDir, directoryMode) {
+  const claimed = new Map()
+  for (const inputPath of inputs) {
+    const outputPath = plyOutputPath(inputPath, inputRoot, outputDir, directoryMode)
+    const previous = claimed.get(outputPath)
+    if (previous) throw new Error(`Output collision: ${previous} and ${inputPath} both map to ${outputPath}`)
+    claimed.set(outputPath, inputPath)
+  }
+}
+
+async function main (argv = process.argv.slice(2)) {
+  const args = parseArgs(argv)
   if (args.help) {
     showUsage()
     return
@@ -69,26 +263,55 @@ async function main () {
     throw new Error('Missing required --output-dir')
   }
   if (args.positional.length > 1) throw new Error(`Unexpected positional argument: ${args.positional[1]}`)
+  if (!['buffers', 'ply'].includes(args.format)) throw new Error(`Unsupported --format ${args.format}. Expected buffers or ply`)
+  if (args.normalize && args.format !== 'ply') throw new Error('--normalize requires --format ply')
+  if (args.resume && args.format !== 'ply') throw new Error('--resume requires --format ply')
 
   const inputPath = path.resolve(process.cwd(), args.positional[0])
   const outputDir = path.resolve(process.cwd(), args.outputDir)
-  const mesh = await buildStructureMesh(inputPath, { version: args.version, logger: console })
-  const metadata = {
-    ...mesh.metadata,
-    buffers: BUFFER_FILES
+  const { root: inputRoot, inputs, directoryMode } = await discoverInputs(inputPath)
+  if (args.format === 'buffers' && directoryMode) throw new Error('--format buffers supports one input file only; use --format ply for directory input')
+  if (args.format === 'ply') assertNoPlyCollisions(inputs, inputRoot, outputDir, directoryMode)
+
+  let failures = 0
+  let skipped = 0
+  for (const [index, structurePath] of inputs.entries()) {
+    const label = directoryMode ? path.relative(inputRoot, structurePath) : structurePath
+    const outputPath = args.format === 'ply'
+      ? plyOutputPath(structurePath, inputRoot, outputDir, directoryMode)
+      : null
+    if (args.resume && await hasCompletedPly(outputPath)) {
+      skipped++
+      console.log(`[${index + 1}/${inputs.length}] Skipped ${label} (existing output)`)
+      continue
+    }
+    console.log(`[${index + 1}/${inputs.length}] Extracting ${label}`)
+    try {
+      const mesh = await buildStructureMesh(structurePath, { version: args.version, logger: console })
+      if (args.format === 'buffers') {
+        const metadata = await writeBufferMesh(mesh, outputDir)
+        console.log(`  Wrote ${metadata.counts.vertexCount} vertices and ${metadata.counts.triangleCount} triangles to ${outputDir}`)
+      } else {
+        await writePlyAtomic(outputPath, mesh.positions, mesh.indices, args.normalize)
+        console.log(`  Wrote ${mesh.metadata.counts.vertexCount} vertices and ${mesh.metadata.counts.triangleCount} triangles to ${outputPath}`)
+      }
+    } catch (error) {
+      failures++
+      console.error(`  Failed: ${error.message || String(error)}`)
+    }
   }
 
-  await fs.mkdir(outputDir, { recursive: true })
-  await fs.writeFile(path.join(outputDir, BUFFER_FILES.positions), typedArrayToBuffer(mesh.positions))
-  await fs.writeFile(path.join(outputDir, BUFFER_FILES.indices), typedArrayToBuffer(mesh.indices))
-  await fs.writeFile(path.join(outputDir, 'mesh.json'), `${JSON.stringify(metadata, null, 2)}\n`, 'utf8')
-
-  console.log(`Extracted mesh from ${inputPath}`)
-  console.log(`Vertices: ${metadata.counts.vertexCount}, triangles: ${metadata.counts.triangleCount}`)
-  console.log(`Wrote mesh buffers to ${outputDir}`)
+  if (skipped > 0) console.log(`Skipped ${skipped} existing PLY output(s)`)
+  if (failures > 0) throw new Error(`${failures} of ${inputs.length} structure mesh export(s) failed`)
 }
 
-main().catch((error) => {
-  console.error(error.message || String(error))
-  process.exitCode = 1
-})
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || String(error))
+    process.exitCode = 1
+  })
+}
+
+module.exports = {
+  main
+}
