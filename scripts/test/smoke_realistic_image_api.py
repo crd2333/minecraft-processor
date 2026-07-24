@@ -28,6 +28,7 @@ class FakeApiHandler(BaseHTTPRequestHandler):
     lock = threading.Lock()
     active_openai_requests = 0
     max_active_openai_requests = 0
+    fail_partial_topup = True
 
     def log_message(self, *_args):
         return
@@ -35,6 +36,14 @@ class FakeApiHandler(BaseHTTPRequestHandler):
     def send_json(self, payload):
         data = json.dumps(payload).encode("utf-8")
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json_error(self, status, payload):
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -105,14 +114,17 @@ class FakeApiHandler(BaseHTTPRequestHandler):
                 message = BytesParser(policy=policy.default).parsebytes(header + body)
                 fields = {}
                 file_data = None
+                filename = None
                 for part in message.iter_parts():
                     name = part.get_param("name", header="content-disposition")
                     if name == "image":
                         file_data = part.get_payload(decode=True)
+                        filename = part.get_filename()
                     elif name:
                         fields[name] = (part.get_payload(decode=True) or b"").decode()
                 assert fields["model"] == "fake-image-model"
-                assert fields["n"] == "2"
+                requested = int(fields["n"])
+                assert requested in {1, 2}
                 assert fields["size"] == "auto"
                 assert fields["quality"] == "high"
                 assert fields["output_format"] == "png"
@@ -120,14 +132,30 @@ class FakeApiHandler(BaseHTTPRequestHandler):
                 assert file_data == PNG_BYTES
                 time.sleep(0.1)
                 encoded = base64.b64encode(PNG_BYTES).decode("ascii")
-                self.send_json(
-                    {
-                        "data": [
-                            {"b64_json": encoded},
-                            {"url": f"http://127.0.0.1:{self.server.server_port}/generated.png"},
-                        ]
-                    }
-                )
+                if (
+                    filename == "partial.png"
+                    and requested == 1
+                    and FakeApiHandler.fail_partial_topup
+                ):
+                    self.send_json_error(
+                        503,
+                        {"error": "temporary top-up failure", "retry_after": 0},
+                    )
+                    return
+                if requested == 2:
+                    # Relays sometimes under-deliver n=2. The CLI must save this
+                    # result and issue a separate n=1 top-up request.
+                    self.send_json({"data": [{"b64_json": encoded}]})
+                else:
+                    self.send_json(
+                        {
+                            "data": [
+                                {
+                                    "url": f"http://127.0.0.1:{self.server.server_port}/generated.png"
+                                }
+                            ]
+                        }
+                    )
             finally:
                 with FakeApiHandler.lock:
                     FakeApiHandler.active_openai_requests -= 1
@@ -137,6 +165,15 @@ class FakeApiHandler(BaseHTTPRequestHandler):
 
 
 def run_cli(args, env):
+    result = run_cli_raw(args, env)
+    if result.returncode != 0:
+        raise AssertionError(
+            f"CLI failed with {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    return result.stdout, result.stderr
+
+
+def run_cli_raw(args, env):
     result = subprocess.run(
         [sys.executable, str(CLI_PATH), *[str(item) for item in args]],
         cwd=PROJECT_ROOT,
@@ -144,11 +181,7 @@ def run_cli(args, env):
         text=True,
         capture_output=True,
     )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"CLI failed with {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    return result.stdout, result.stderr
+    return result
 
 
 def assert_generated_metadata(output_dir, expected_cases, expected_images, provider, model, generation):
@@ -300,6 +333,45 @@ def main():
             )
             assert "skipped=2" in stdout
             assert len(FakeApiHandler.calls) == call_count
+
+            partial_input = root / "partial.png"
+            partial_input.write_bytes(PNG_BYTES)
+            partial_output = root / "partial-output"
+            partial_args = [
+                partial_input,
+                "--provider",
+                "openai",
+                "--base-url",
+                f"http://127.0.0.1:{port}/v1",
+                "--model",
+                "fake-image-model",
+                "--api-key",
+                "openai-test-key",
+                "--prompt-file",
+                prompt,
+                "--output",
+                partial_output,
+                "--num-images",
+                "2",
+                "--retries",
+                "0",
+            ]
+            partial_result = run_cli_raw(partial_args, common_env)
+            assert partial_result.returncode == 1
+            assert "partial 1/2 image(s) saved" in partial_result.stderr
+            partial_metadata = next(partial_output.glob("*.json"))
+            partial_payload = json.loads(partial_metadata.read_text(encoding="utf-8"))
+            assert partial_payload["status"] == "partial"
+            assert len(partial_payload["outputs"]) == 1
+            partial_call_count = len(FakeApiHandler.calls)
+
+            FakeApiHandler.fail_partial_topup = False
+            stdout, _ = run_cli(partial_args, common_env)
+            assert "generated=1" in stdout
+            assert len(FakeApiHandler.calls) == partial_call_count + 1
+            completed_payload = json.loads(partial_metadata.read_text(encoding="utf-8"))
+            assert completed_payload["status"] == "complete"
+            assert len(completed_payload["outputs"]) == 2
 
             dry_output = root / "dry-output"
             stdout, _ = run_cli(

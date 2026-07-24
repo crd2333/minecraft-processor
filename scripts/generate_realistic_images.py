@@ -14,6 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -37,7 +38,7 @@ DEFAULTS = {
     },
     "openai": {
         "base_url": "https://api.openai.com/v1",
-        "model": "gpt-image-1",
+        "model": "gpt-image-2",
         "size": "auto",
         "quality": "high",
         "output_format": "png",
@@ -85,9 +86,10 @@ USER_AGENT = "minecraft-processor-realistic-image/1"
 
 
 class RequestFailure(RuntimeError):
-    def __init__(self, message, retryable=False):
+    def __init__(self, message, retryable=False, retry_after=None):
         super().__init__(message)
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 @dataclass
@@ -276,6 +278,39 @@ def provider_error_message(status, body, api_key):
     return f"HTTP {status}: {text}"
 
 
+def retry_after_seconds(headers, body):
+    values = []
+    header_value = headers.get("Retry-After") if headers is not None else None
+    if header_value:
+        try:
+            values.append(float(header_value))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(header_value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                values.append((retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, dict):
+        candidates = [payload.get("retry_after")]
+        if isinstance(payload.get("error"), dict):
+            candidates.append(payload["error"].get("retry_after"))
+        for value in candidates:
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                pass
+
+    positive_values = [value for value in values if value >= 0]
+    return min(300.0, max(positive_values)) if positive_values else None
+
+
 def perform_request(request, timeout, api_key=None, maximum=MAX_RESPONSE_BYTES):
     try:
         with urlopen(request, timeout=timeout) as response:
@@ -283,7 +318,11 @@ def perform_request(request, timeout, api_key=None, maximum=MAX_RESPONSE_BYTES):
     except HTTPError as error:
         body = error.read(MAX_ERROR_BYTES)
         retryable = error.code in TRANSIENT_HTTP_STATUSES or 500 <= error.code <= 599
-        raise RequestFailure(provider_error_message(error.code, body, api_key), retryable) from error
+        raise RequestFailure(
+            provider_error_message(error.code, body, api_key),
+            retryable,
+            retry_after_seconds(error.headers, body),
+        ) from error
     except (URLError, TimeoutError, ConnectionError) as error:
         reason = getattr(error, "reason", error)
         raise RequestFailure(f"Network request failed: {redact_text(reason, api_key)}", True) from error
@@ -296,8 +335,11 @@ def request_with_retries(operation, retries, api_key, label):
             return operation(), attempt
         except RequestFailure as error:
             if not error.retryable or attempt >= attempts:
+                error.attempts = attempt
                 raise
-            delay = min(8.0, 2 ** (attempt - 1))
+            delay = error.retry_after
+            if delay is None:
+                delay = min(8.0, 2 ** (attempt - 1))
             print(
                 f"  {label}: transient failure ({redact_text(error, api_key)}); "
                 f"retrying in {delay:g}s",
@@ -307,12 +349,10 @@ def request_with_retries(operation, retries, api_key, label):
     raise AssertionError("retry loop exhausted unexpectedly")
 
 
-def require_image_count(images, requested, provider):
-    if len(images) != requested:
-        raise RequestFailure(
-            f"{provider} returned {len(images)} image(s), expected {requested}"
-        )
-    return images
+def accept_image_batch(images, requested, provider):
+    if not images:
+        raise RequestFailure(f"{provider} returned no images")
+    return images[:requested]
 
 
 def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation, timeout):
@@ -386,7 +426,7 @@ def gemini_request(endpoint, api_key, prompt, image_data, mime_type, generation,
                 )
 
     if images:
-        return require_image_count(images, generation["numImages"], "Gemini")
+        return accept_image_batch(images, generation["numImages"], "Gemini")
     details = "\n".join(text_parts).strip()
     suffix = f" Provider text: {details[:500]}" if details else ""
     raise RequestFailure(f"Gemini response did not contain an image part.{suffix}")
@@ -466,7 +506,7 @@ def openai_response_images(payload, timeout, requested):
             )
         images.append(image)
 
-    return require_image_count(images, requested, "OpenAI-compatible API")
+    return accept_image_batch(images, requested, "OpenAI-compatible API")
 
 
 def openai_request(
@@ -597,11 +637,11 @@ def load_metadata(path):
     return payload if isinstance(payload, dict) else None
 
 
-def completion_matches(
+def matching_output_progress(
     metadata, source_sha256, prompt_sha256, provider, model, endpoint, generation, output_dir
 ):
     if not metadata or metadata.get("format") != TOOL_FORMAT:
-        return False
+        return None
     source = metadata.get("source") or {}
     request = metadata.get("request") or {}
     recorded_generation = dict(request.get("generation") or {})
@@ -614,26 +654,28 @@ def completion_matches(
         or request.get("endpoint") != redact_url(endpoint)
         or recorded_generation != generation
     ):
-        return False
+        return None
 
     outputs = metadata.get("outputs")
     if not isinstance(outputs, list):
         legacy_output = metadata.get("output")
         outputs = [legacy_output] if isinstance(legacy_output, dict) else []
-    if len(outputs) != generation["numImages"]:
-        return False
+    if len(outputs) > generation["numImages"]:
+        return None
+    output_paths = []
     for output in outputs:
         if not isinstance(output, dict):
-            return False
+            return None
         relative_output = output.get("path")
         if not isinstance(relative_output, str):
-            return False
+            return None
         output_path = (Path(output_dir).resolve() / relative_output).resolve()
         if not is_within(output_path, output_dir) or not output_path.is_file():
-            return False
+            return None
         if output.get("sha256") != sha256_file(output_path):
-            return False
-    return True
+            return None
+        output_paths.append(output_path)
+    return outputs, output_paths
 
 
 def existing_artifacts(base_path):
@@ -729,7 +771,10 @@ def resolve_config(args):
     }
 
 
-def generate_one(config, prompt, source_path, source_data, mime_type, timeout):
+def generate_one(config, prompt, source_path, source_data, mime_type, timeout, num_images=None):
+    generation = dict(config["generation"])
+    if num_images is not None:
+        generation["numImages"] = num_images
     if config["provider"] == "gemini":
         return gemini_request(
             config["endpoint"],
@@ -737,7 +782,7 @@ def generate_one(config, prompt, source_path, source_data, mime_type, timeout):
             prompt,
             source_data,
             mime_type,
-            config["generation"],
+            generation,
             timeout,
         )
     return openai_request(
@@ -748,7 +793,7 @@ def generate_one(config, prompt, source_path, source_data, mime_type, timeout):
         source_path,
         source_data,
         mime_type,
-        config["generation"],
+        generation,
         timeout,
     )
 
@@ -767,20 +812,21 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
     metadata_path = base_path.with_suffix(".json")
     metadata = load_metadata(metadata_path)
     artifacts = existing_artifacts(base_path)
-
-    if completion_matches(
-        metadata,
-        source_sha256,
-        prompt_sha256,
-        config["provider"],
-        config["model"],
-        config["endpoint"],
-        config["generation"],
-        output_dir,
-    ) and not args.overwrite:
+    progress = None
+    if not args.overwrite:
+        progress = matching_output_progress(
+            metadata,
+            source_sha256,
+            prompt_sha256,
+            config["provider"],
+            config["model"],
+            config["endpoint"],
+            config["generation"],
+            output_dir,
+        )
+    if progress is not None and len(progress[0]) == config["generation"]["numImages"]:
         return "skipped", metadata_path
-
-    if artifacts and not args.overwrite:
+    if artifacts and not args.overwrite and progress is None:
         raise ValueError(
             f"Output artifacts already exist with incomplete or different settings at {base_path}. "
             "Pass --overwrite to replace them."
@@ -789,58 +835,112 @@ def process_case(args, config, prompt_path, prompt, prompt_sha256, output_dir, s
     if args.dry_run:
         return "planned", metadata_path
 
-    started_at = utc_now()
-    results, attempts = request_with_retries(
-        lambda: generate_one(config, prompt, source_path, source_data, mime_type, args.timeout),
-        args.retries,
-        config["api_key"],
-        relative_path.as_posix(),
-    )
-    image_paths = []
-    output_records = []
-    for index, result in enumerate(results, start=1):
-        image_path = numbered_output_path(base_path, index, len(results), result.mime_type)
-        atomic_write_bytes(image_path, result.data)
-        image_paths.append(image_path)
-        output_records.append(
-            {
-                "index": index,
-                "path": relative_output_path(image_path, output_dir),
-                "mimeType": result.mime_type,
-                "sha256": sha256_bytes(result.data),
-                "bytes": len(result.data),
-            }
-        )
+    target_count = config["generation"]["numImages"]
+    if progress is None or args.overwrite:
+        output_records = []
+        image_paths = []
+        previous_request = {}
+        provider_texts = []
+        started_at = utc_now()
+    else:
+        output_records = [dict(record) for record in progress[0]]
+        image_paths = list(progress[1])
+        previous_request = metadata.get("request") or {}
+        response = metadata.get("response") or {}
+        provider_texts = list(response.get("texts") or [])
+        started_at = metadata.get("createdAt") or utc_now()
+    attempts = int(previous_request.get("attempts") or 0)
 
-    payload = {
-        "format": TOOL_FORMAT,
-        "createdAt": started_at,
-        "completedAt": utc_now(),
-        "source": {
-            "path": str(source_path),
-            "relativePath": relative_path.as_posix(),
-            "mimeType": mime_type,
-            "sha256": source_sha256,
-            "bytes": len(source_data),
-        },
-        "request": {
-            "provider": config["provider"],
-            "model": config["model"],
-            "endpoint": redact_url(config["endpoint"]),
-            "generation": config["generation"],
-            "promptPath": str(prompt_path),
-            "promptSha256": prompt_sha256,
-            "prompt": prompt,
-            "attempts": attempts,
-        },
-        "outputs": output_records,
-    }
-    if len(output_records) == 1:
-        payload["output"] = output_records[0]
-    provider_texts = [result.provider_text for result in results]
-    if any(provider_texts):
-        payload["response"] = {"texts": provider_texts}
-    atomic_write_json(metadata_path, payload)
+    def write_progress(status, error=None):
+        now = utc_now()
+        payload = {
+            "format": TOOL_FORMAT,
+            "status": status,
+            "createdAt": started_at,
+            "updatedAt": now,
+            "source": {
+                "path": str(source_path),
+                "relativePath": relative_path.as_posix(),
+                "mimeType": mime_type,
+                "sha256": source_sha256,
+                "bytes": len(source_data),
+            },
+            "request": {
+                "provider": config["provider"],
+                "model": config["model"],
+                "endpoint": redact_url(config["endpoint"]),
+                "generation": config["generation"],
+                "promptPath": str(prompt_path),
+                "promptSha256": prompt_sha256,
+                "prompt": prompt,
+                "attempts": attempts,
+            },
+            "outputs": output_records,
+        }
+        if target_count == 1 and len(output_records) == 1:
+            payload["output"] = output_records[0]
+        if any(provider_texts):
+            payload["response"] = {"texts": provider_texts}
+        if status == "complete":
+            payload["completedAt"] = now
+        if error is not None:
+            payload["lastError"] = redact_text(error, config["api_key"])
+        atomic_write_json(metadata_path, payload)
+
+    while len(output_records) < target_count:
+        remaining = target_count - len(output_records)
+        try:
+            results, batch_attempts = request_with_retries(
+                lambda: generate_one(
+                    config,
+                    prompt,
+                    source_path,
+                    source_data,
+                    mime_type,
+                    args.timeout,
+                    remaining,
+                ),
+                args.retries,
+                config["api_key"],
+                f"{relative_path.as_posix()} (need {remaining})",
+            )
+            attempts += batch_attempts
+        except Exception as error:
+            attempts += int(getattr(error, "attempts", 0))
+            if output_records:
+                write_progress("partial", error)
+                return "partial", {
+                    "paths": image_paths,
+                    "metadata": metadata_path,
+                    "error": redact_text(error, config["api_key"]),
+                }
+            raise
+
+        for result in results:
+            index = len(output_records) + 1
+            image_path = numbered_output_path(base_path, index, target_count, result.mime_type)
+            atomic_write_bytes(image_path, result.data)
+            image_paths.append(image_path)
+            output_records.append(
+                {
+                    "index": index,
+                    "path": relative_output_path(image_path, output_dir),
+                    "mimeType": result.mime_type,
+                    "sha256": sha256_bytes(result.data),
+                    "bytes": len(result.data),
+                }
+            )
+            provider_texts.append(result.provider_text)
+            status = "complete" if len(output_records) == target_count else "partial"
+            write_progress(status)
+        if len(results) < remaining and len(output_records) < target_count:
+            print(
+                f"  {relative_path.as_posix()}: provider returned {len(results)}/{remaining} "
+                f"requested image(s); saved progress and requesting the remaining "
+                f"{target_count - len(output_records)}",
+                file=sys.stderr,
+            )
+
     remove_stale_images(base_path, image_paths)
     return "generated", image_paths
 
@@ -891,8 +991,8 @@ def build_parser():
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=1,
-        help="Maximum in-flight cases (default: 1)",
+        default=5,
+        help="Maximum in-flight cases (default: 5)",
     )
     parser.add_argument(
         "--num-images",
@@ -935,7 +1035,14 @@ def run(args):
     if args.dry_run:
         print("Mode: dry-run (no API requests will be sent)")
 
-    counts = {"generated": 0, "skipped": 0, "planned": 0, "failed": 0, "output_images": 0}
+    counts = {
+        "generated": 0,
+        "partial": 0,
+        "skipped": 0,
+        "planned": 0,
+        "failed": 0,
+        "output_images": 0,
+    }
 
     def execute_case(source_path, relative_path):
         return process_case(
@@ -964,6 +1071,13 @@ def run(args):
         elif status == "generated":
             counts["output_images"] += len(result)
             print(f"{label}: generated {len(result)} image(s) -> {result[0].parent}")
+        elif status == "partial":
+            counts["output_images"] += len(result["paths"])
+            print(
+                f"{label}: partial {len(result['paths'])}/{args.num_images} image(s) saved -> "
+                f"{result['metadata']} ({result['error']})",
+                file=sys.stderr,
+            )
         else:
             print(f"{label}: {status} -> {result}")
 
@@ -1007,11 +1121,11 @@ def run(args):
 
     print(
         "Summary: "
-        f"generated={counts['generated']} skipped={counts['skipped']} "
+        f"generated={counts['generated']} partial={counts['partial']} skipped={counts['skipped']} "
         f"planned={counts['planned']} failed={counts['failed']} "
         f"output_images={counts['output_images']}"
     )
-    return 1 if counts["failed"] else 0
+    return 1 if counts["failed"] or counts["partial"] else 0
 
 
 def main(argv=None):
