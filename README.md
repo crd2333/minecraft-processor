@@ -128,33 +128,26 @@ The viewer supports:
 - GBuffer export,
 - bounding-box display and filtering.
 
-If `serve_mc.js` reports missing assets, run `npm run build` first.
+## Quick start
 
-## Build
-
-Install dependencies:
+Install Node.js and Git LFS, then clone the repository with its prebuilt runtime assets:
 
 ```bash
-npm install
+git lfs install
+git clone https://github.com/crd2333/minecraft-processor.git
+cd minecraft-processor
+node serve_mc.js assets/<file> --version 1.21.8 --port 3000
 ```
 
-Build runtime assets required by the browser viewer:
+The parse and viewer entrypoints run directly from the checked-in assets under `static/`; normal use does not require `npm install`, a project-level `node_modules` directory, or `npm run build`.
+
+If an entrypoint reports missing or invalid assets after cloning, fetch the Git LFS objects first:
 
 ```bash
-npm run build
+git lfs pull
 ```
 
-What `npm run build` does:
-
-- `npm run build:vendor-packages` builds/copies runtime vendor package payloads into `static/vendor/`
-- `npm run build:viewer-assets` generates Prismarine viewer textures/block-state assets into `static/vendor/packages/prismarine-viewer/public/`
-- Webpack bundles the application viewer runtime into `static/index.js` and the Prismarine viewer worker runtime into `static/vendor/packages/prismarine-viewer/public/worker.js`
-
-The vendor package build is content-aware. It prepares patched package sources under `.build/vendor-packages/`, stages generated vendor output under `.build/vendor-output/`, then syncs into `static/vendor/` only when file bytes differ. If the recorded input fingerprint still matches and the expected output files exist, the vendor build is skipped. Use `npm run build:vendor-packages -- -f` to force a vendor artifact refresh.
-
-`serve_mc.js` depends on built output and runtime static lookup assets under `static/`.
-
-### Prebuilt runtime vendor assets
+### Prebuilt runtime assets
 
 The release-oriented vendor layout lives under `static/vendor/`:
 
@@ -172,8 +165,26 @@ Viewer asset notes:
 
 - `patches/prismarine-viewer/` contains local overlays applied to the installed `prismarine-viewer` package before bundling.
 - `static/index.js` is the final browser application bundle. The viewer worker bundle lives with the vendored viewer package at `static/vendor/packages/prismarine-viewer/public/worker.js`.
-- When changing viewer runtime code under `patches/prismarine-viewer/` or `apps/frontend/viewer/`, rebuild with `npm run build` so `static/` stays in sync.
 - Prefer editing source files, not `static/*`, unless you are intentionally checking in regenerated build output.
+
+### Development builds
+
+Only contributors changing dependencies, viewer source, Prismarine viewer patches, or generated runtime assets need to install npm dependencies and rebuild:
+
+```bash
+npm install
+npm run build
+```
+
+`npm install` does not trigger a build automatically. Run `npm run build` explicitly after making build-relevant changes and commit the regenerated assets with the source changes.
+
+What `npm run build` does:
+
+- `npm run build:vendor-packages` builds/copies runtime vendor package payloads into `static/vendor/`
+- `npm run build:viewer-assets` generates Prismarine viewer textures/block-state assets into `static/vendor/packages/prismarine-viewer/public/`
+- Webpack bundles the application viewer runtime into `static/index.js` and the Prismarine viewer worker runtime into `static/vendor/packages/prismarine-viewer/public/worker.js`
+
+The vendor package build is content-aware. It prepares patched package sources under `.build/vendor-packages/`, stages generated vendor output under `.build/vendor-output/`, then syncs into `static/vendor/` only when file bytes differ. If the recorded input fingerprint still matches and the expected output files exist, the vendor build is skipped. Use `npm run build:vendor-packages -- -f` to force a vendor artifact refresh.
 
 ## Usage
 
@@ -229,11 +240,10 @@ Optional viewer flags:
 
 ### Headless SuperDec point clouds
 
-Install the Python dependency and build the block-state model assets:
+Install the Python dependency. The required block-state model assets are included in the Git LFS checkout:
 
 ```bash
 python3 -m pip install -r requirements-pointcloud.txt
-npm run build
 ```
 
 Convert one structure file into a normalized 4,096-point SuperDec input:

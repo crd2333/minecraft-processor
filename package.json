@@ -16,8 +16,7 @@
     "build:vendor-packages": "node scripts/build-vendor.js",
     "build:viewer-assets": "node scripts/generate-assets.js",
     "build:client": "node scripts/build-vendor.js --prepare-viewer-only && webpack --config webpack.config.js",
-    "build": "npm run build:vendor-packages && npm run build:viewer-assets && webpack --config webpack.config.js",
-    "prepare": "npm run build"
+    "build": "npm run build:vendor-packages && npm run build:viewer-assets && webpack --config webpack.config.js"
   },
   "author": "",
   "license": "ISC",
