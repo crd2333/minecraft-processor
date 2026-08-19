@@ -21,5 +21,4 @@ __pycache__/
 .vscode/
 
 tmp/
-selected-paths.txt
 outputs/
