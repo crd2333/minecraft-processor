@@ -1,6 +1,7 @@
 *.jpg
 model.*
-assets/
+assets/*
+!assets/examples/
 node_modules/
 .build/
 .cache/
